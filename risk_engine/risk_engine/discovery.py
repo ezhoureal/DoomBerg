@@ -150,18 +150,19 @@ class Discovery:
         st = m.get("state") or {}
         lltv = int(m["lltv"]) / 1e18
         coll, loan = m.get("collateralAsset") or {}, m["loanAsset"]
-        age_days = (time.time() - int(m.get("creationTimestamp") or time.time())) / 86400
+        created = m.get("creationTimestamp")
+        age_days = round((time.time() - int(created)) / 86400) if created else None
         label = f"{coll.get('symbol', '?')} / {loan['symbol']}"
         self.g.add_node(Node(mid, "market", label, chain_id, m["marketId"], attrs={
             "lltv": lltv, "utilization": st.get("utilization"), "supply_usd": st.get("supplyAssetsUsd"),
             "borrow_usd": st.get("borrowAssetsUsd"), "liquidity_usd": st.get("liquidityAssetsUsd"),
             "collateral_usd": st.get("collateralAssetsUsd"), "supply_apy": st.get("supplyApy"),
             "borrow_apy": st.get("borrowApy"), "bad_debt_usd": (m.get("badDebt") or {}).get("usd"),
-            "realized_bad_debt_usd": (m.get("realizedBadDebt") or {}).get("usd"), "age_days": round(age_days),
+            "realized_bad_debt_usd": (m.get("realizedBadDebt") or {}).get("usd"), "age_days": age_days,
             "subtitle": f"LLTV {lltv:.1%} - util {(st.get('utilization') or 0):.0%}",
             "url": f"https://app.morpho.org/market?id={m['marketId']}",
             "warnings": [w["type"] for w in m.get("warnings") or []],
-        }, risk_factors={"utilization": st.get("utilization"), "age_days": round(age_days)},
+        }, risk_factors={"utilization": st.get("utilization"), "age_days": age_days},
             evidence=[Evidence("morpho-api", f"Market {short(m['marketId'])}: supply ${st.get('supplyAssetsUsd') or 0:,.0f}, "
                                             f"borrow ${st.get('borrowAssetsUsd') or 0:,.0f}, LLTV {lltv:.1%}", ref=f"market {m['marketId']}")]))
         self.link(mid, self.add_protocol("morpho_blue", chain_id), "runs_on",
@@ -171,14 +172,14 @@ class Discovery:
         lid = self.add_asset(loan, chain_id, 1)
         self.link(mid, lid, "lends", Evidence("morpho-api", f"Loan asset {loan['symbol']}"))
         if m.get("oracle"):
-            oid = self.add_oracle(m["oracle"], chain_id, coll, st)
+            oid = self.add_oracle(m["oracle"], chain_id, coll, st, age_days)
             self.link(mid, oid, "priced_by", Evidence("morpho-api", f"Oracle {short(m['oracle']['address'])} ({m['oracle']['type']})"))
         else:
             self.warnings.append(f"Market {label} has no oracle data")
         return mid
 
     # ------------------------------------------------------------------ oracles
-    def add_oracle(self, o: dict, chain_id: int, coll: dict, mstate: dict) -> str:
+    def add_oracle(self, o: dict, chain_id: int, coll: dict, mstate: dict, market_age_days: int | None) -> str:
         oid = f"oracle:{chain_id}:{o['address'].lower()}"
         data = o.get("data") or {}
         feeds = {k: (data.get(k) or {}).get("address") for k in ("baseFeedOne", "baseFeedTwo", "quoteFeedOne", "quoteFeedTwo")}
@@ -228,7 +229,7 @@ class Discovery:
                   "Exchange-rate / reference-asset pricing: a depeg of the collateral token itself would NOT be seen" if (base_feeds or base_vault) else
                   "No base feed: the collateral is priced at a fixed value")
         node.risk_factors.update({"tracks_market": tracks, "single_feed": base_feeds <= 1, "stale_now": stale,
-                                  "collateral_tvl_usd": mstate.get("collateralAssetsUsd")})
+                                  "collateral_tvl_usd": mstate.get("collateralAssetsUsd"), "age_days": market_age_days})
         node.attrs.update({"tracks_market": tracks, "tracking_reason": reason, "feed_descriptions": descriptions})
         node.evidence.append(Evidence("heuristic", reason))
         return oid
@@ -277,7 +278,7 @@ class Discovery:
             node.evidence.append(Evidence("rpc", f"totalSupply={node.attrs['total_supply']}, owner={info.get('owner')}, "
                                                  f"proxy impl={info.get('proxy_implementation')}, asset()={info.get('erc4626_asset')}",
                                           ref=f"{address} getCode/owner/totalSupply/asset", block=info.get("block")))
-        if price and kind in ("fiat_stable", "yield_stable", "synthetic_stable") and reg.get("peg") and kind == "fiat_stable":
+        if price and reg.get("peg"):
             node.risk_factors["price_deviation"] = abs(price / reg["peg"] - 1)
         self.g.add_node(node)
 
@@ -308,6 +309,7 @@ class Discovery:
                 exp = (pt.get("expiry") or "")[:10]
                 self.g.add_node(Node(amm, "amm", f"Pendle market {pt['name']}", chain_id, pt["market"], attrs={
                     "liquidity_usd": pt.get("liquidity_usd"), "expiry": exp, "implied_apy": pt.get("implied_apy"),
+                    "underlying": pt.get("underlying"),
                     "subtitle": f"expiry {exp} - liq ${(pt.get('liquidity_usd') or 0) / 1e6:,.1f}M", "url": pt["url"]},
                     evidence=[Evidence("pendle-api", f"PT market {pt['market']}, liquidity ${pt.get('liquidity_usd') or 0:,.0f}, expiry {exp}",
                                        ref=f"/v1/{chain_id}/markets/active")]))
@@ -315,6 +317,10 @@ class Discovery:
                 self.link(amm, self.add_protocol("pendle_v2", chain_id), "runs_on", Evidence("pendle-api", "Pendle V2 AMM"))
                 node.attrs["expiry"] = exp
                 node.attrs["subtitle"] = f"Pendle PT - matures {exp}"
+                if not node.attrs.get("price_usd") or not node.attrs.get("decimals"):
+                    pa = pendle.asset(address, chain_id) or {}
+                    node.attrs["price_usd"] = node.attrs.get("price_usd") or pa.get("price_usd")
+                    node.attrs["decimals"] = node.attrs.get("decimals") or pa.get("decimals")
                 if pt.get("underlying"):
                     ua = morpho.asset(pt["underlying"], chain_id) or {"address": pt["underlying"]}
                     uid = self.add_asset(ua, chain_id, depth + 1)

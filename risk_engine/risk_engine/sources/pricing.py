@@ -64,17 +64,17 @@ def swap_quote(token_in: str, decimals: int, amount_usd: float, price: float, ch
     if not rs:
         return None
     usd_in = float(rs.get("amountInUsd") or 0)
-    usd_out = float(rs.get("amountOutUsd") or 0)
     gas = float(rs.get("gasUsd") or 0)
-    if usd_in <= 0:
+    # Dollars actually received (USDC / USDT, 6 decimals on every chain above) against our mark. Kyber's own
+    # amountInUsd / amountOutUsd are not used: for thin tokens it values the input off the same route it trades
+    # through (hiding the slippage), and its stablecoin oracle is off by a few bp on both sides.
+    usd_out = int(rs.get("amountOut") or 0) / 1e6
+    if usd_out <= 0:
         return None
-    # Kyber prices amountIn with its own oracle; when that is missing, fall back to our price.
-    if usd_in < amount_usd * 0.2:
-        usd_in = amount_usd
     return {
         "amount_in_usd": usd_in,
         "amount_out_usd": usd_out,
         "gas_usd": gas,
-        "price_impact": max(0.0, 1 - (usd_out - gas) / usd_in),
+        "price_impact": max(0.0, 1 - (usd_out - gas) / amount_usd),
         "route_hops": len(rs.get("route") or []),
     }
