@@ -6,7 +6,6 @@ import { TYPE_META, pct, short, usd } from "../format";
 type ShockReq = { node_id: string; mode: string; alert: string; probability_override: number | null; exit_cost_override: number | null };
 
 const SHOW_ATTRS: Record<string, [string, (v: any) => string][]> = {
-  vault: [["tvl_usd", usd], ["liquidity_usd", usd], ["net_apy", pct], ["exotic_share", pct], ["curators", (v) => v?.join(", ")], ["version", String]],
   market: [["supply_usd", usd], ["borrow_usd", usd], ["liquidity_usd", usd], ["utilization", pct], ["lltv", pct], ["supply_apy", pct], ["age_days", (v) => `${v} days`], ["bad_debt_usd", usd]],
   oracle: [["oracle_type", String], ["tracking_reason", String], ["feed_descriptions", (v) => v?.join(" × ")]],
   feed: [["answer", (v) => (v ?? "n/a").toLocaleString()], ["age_s", (v) => (v ? `${Math.round(v / 60)} min` : "n/a")], ["stale", (v) => (v ? "YES" : "no")], ["nav_feed", (v) => (v ? "issuer NAV" : "market")]],
@@ -16,7 +15,6 @@ const SHOW_ATTRS: Record<string, [string, (v: any) => string][]> = {
   issuer: [["tier", String], ["backing", String]],
   protocol: [["tvl_usd", usd]],
   chain: [["chain_class", String], ["head_block", String], ["note", String]],
-  curator: [["address", short]],
   bridge: [["canonical", (v) => (v ? "canonical (L1-secured)" : "third-party")]],
 };
 

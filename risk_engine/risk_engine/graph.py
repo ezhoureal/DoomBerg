@@ -1,7 +1,8 @@
 """Node, edge and evidence types, and the dependency graph container.
 
 Edges point from the dependent to the thing it relies on:
-``position --deposits_in--> vault --allocates_to--> market --priced_by--> oracle``.
+``position --holds--> PT --traded_on--> Pendle AMM --runs_on--> Pendle V2 --settles_on--> chain``, or
+``position --deposits_in--> market --collateral_in--> PT`` with ``market --priced_by--> oracle``.
 Damage therefore travels against the edge direction.
 """
 
@@ -14,26 +15,23 @@ from typing import Any
 import networkx as nx
 
 NODE_TYPES = (
-    "position", "vault", "curator", "market", "protocol", "asset", "oracle",
-    "feed", "issuer", "mint_authority", "bridge", "chain", "amm",
+    "position", "market", "oracle", "feed", "asset", "amm", "protocol", "issuer", "mint_authority", "bridge", "chain",
 )
 
 EDGE_TYPES = (
-    "deposits_in",      # position -> vault / market
-    "holds",            # position -> asset
-    "managed_by",       # vault -> curator
-    "allocates_to",     # vault -> market (weight = share of vault assets)
-    "denominated_in",   # vault/position -> asset the claim is redeemed in
+    "holds",            # position -> PT
+    "deposits_in",      # position -> market
+    "denominated_in",   # position -> loan asset the supply is redeemed in
     "lends",            # market -> loan asset (informational, no lender-side propagation)
-    "collateral_in",    # market -> collateral asset (market accepts it as collateral)
+    "collateral_in",    # market -> PT collateral
     "priced_by",        # market -> oracle
     "reads_feed",       # oracle -> feed / exchange-rate vault
     "backed_by",        # asset -> underlying asset
     "issued_by",        # asset -> issuer
     "mintable_by",      # asset -> mint authority
     "bridged_via",      # asset -> bridge
-    "traded_on",        # asset -> amm (Pendle market, DEX pool)
-    "runs_on",          # market/vault -> protocol code
+    "traded_on",        # PT -> Pendle AMM market
+    "runs_on",          # market / amm -> protocol code
     "settles_on",       # anything -> chain
 )
 

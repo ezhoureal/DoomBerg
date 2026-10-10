@@ -54,7 +54,9 @@ export default function App() {
     finally { setBusy(null); }
   };
 
-  const vault = analysis?.graph.nodes.find((n) => n.type === "vault" && n.attrs.is_root_vault) ?? analysis?.graph.nodes.find((n) => n.attrs.is_root_vault);
+  const pt = analysis?.graph.nodes.find((n) => n.type === "asset" && n.attrs.kind === "pt");
+  const amm = analysis?.graph.nodes.find((n) => n.type === "amm");
+  const market = analysis?.graph.nodes.find((n) => n.type === "market");
 
   return (
     <div className="app">
@@ -85,10 +87,10 @@ export default function App() {
             <div className="empty">
               <div className="empty-card">
                 <h1>One position, a dozen silent dependencies.</h1>
-                <p>Paste a Morpho vault, market or token (or a wallet). The engine traces everything the position relies on (oracle, underlying token,
-                  issuer, bridge, chain, who can mint), then lets you break any piece and prices <b>stay vs exit</b>.</p>
+                <p>Paste a Pendle PT token, or a Morpho market that takes a PT as collateral. The engine traces everything the position relies on
+                  (oracle, underlying token, Pendle AMM, issuer, bridge, chain, who can mint), then lets you break any piece and prices <b>stay vs exit</b>.</p>
                 <ol>
-                  <li><b>Enter the position</b>: or start with the Belem RWA EURCV vault on the left.</li>
+                  <li><b>Enter the position</b>: or start with the brief's PT-reUSD market on the left.</li>
                   <li><b>See the dependency graph</b>: every link carries the API / on-chain evidence behind it.</li>
                   <li><b>Pick what breaks</b>: a component and a failure type.</li>
                   <li><b>Read the answer</b>: expected loss, exit cost, break-even probability and the verdict with its reason.</li>
@@ -105,10 +107,11 @@ export default function App() {
                 </button>
                 <div className="pos-title">
                   <b>{analysis.graph.nodes.find((n) => n.id === analysis.graph.root)?.label}</b>
-                  <span>{CHAINS[analysis.request.chain_id]} · {analysis.request.kind}
-                    {vault?.attrs.tvl_usd ? ` · TVL ${usd(vault.attrs.tvl_usd)}` : ""}
-                    {vault?.attrs.liquidity_usd !== undefined ? ` · instant liquidity ${usd(vault.attrs.liquidity_usd)}` : ""}
-                    {vault?.attrs.net_apy ? ` · APY ${pct(vault.attrs.net_apy)}` : ""}</span>
+                  <span>{CHAINS[analysis.request.chain_id]} · {analysis.request.kind === "market" ? "Morpho market, PT collateral" : "Pendle PT"}
+                    {market ? ` · LLTV ${pct(market.attrs.lltv)} · utilization ${pct(market.attrs.utilization, 0)} · instant liquidity ${usd(market.attrs.liquidity_usd)}` : ""}
+                    {pt?.attrs.expiry ? ` · matures ${pt.attrs.expiry}` : ""}
+                    {amm?.attrs.liquidity_usd !== undefined ? ` · AMM liquidity ${usd(amm.attrs.liquidity_usd)}` : ""}
+                    {amm?.attrs.implied_apy ? ` · implied APY ${pct(amm.attrs.implied_apy)}` : ""}</span>
                 </div>
                 <div className="seg small">
                   <button className={colorMode === "risk" ? "on" : ""} onClick={() => setColorMode("risk")}>Color: risk share</button>

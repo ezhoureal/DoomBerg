@@ -1,7 +1,7 @@
-"""Stage 2 - Shock: Monte Carlo propagation of one failure through the dependency graph.
+"""Stage 2 - Shock: Monte Carlo propagation of one failure through a PT position's dependency graph.
 
 Each node carries, per simulation draw:
-  loss    fraction of value lost (asset price drop, lender loss in a market, vault share-price loss)
+  loss    fraction of value lost (token price drop, AMM exit discount, lender loss in a market)
   oerr    oracle price error, + means the oracle over-prices the collateral
   stale   hours an oracle is frozen
   frozen  hours a chain / protocol cannot process transactions
@@ -24,16 +24,14 @@ TRANSMISSION = {
     "mintable_by": "unbacked minting dilutes every holder",
     "bridged_via": "a bridged copy is only as good as the bridge's locked collateral",
     "traded_on": "the PT is priced and exited through this AMM",
-    "collateral_in": "collateral value drop -> under-water loans -> bad debt for lenders",
+    "collateral_in": "PT value drop -> under-water loans -> bad debt for lenders",
     "priced_by": "wrong or frozen oracle -> over-borrowing or failed liquidations",
     "reads_feed": "the oracle passes on whatever its feed reports",
-    "allocates_to": "vault loss = allocation weight x market loss",
-    "managed_by": "curator decides where the vault lends",
     "runs_on": "a contract bug hits everything deployed on it",
     "denominated_in": "the claim is paid in this token; if it depegs, the claim is worth less",
-    "deposits_in": "the position is a share of this vault / market",
+    "deposits_in": "the position is a supply share of this market",
     "holds": "the position is this token",
-    "settles_on": "if the chain stops, nobody can liquidate or withdraw",
+    "settles_on": "if the chain stops, nobody can liquidate, withdraw or sell",
     "lends": "loan asset of the market",
 }
 
@@ -88,14 +86,14 @@ class Simulator:
                 return d.get(target, z)
 
             for e in outs:
-                if e.type in ("settles_on", "runs_on"):
+                if e.type in ("settles_on", "runs_on", "traded_on"):
                     frozen = np.maximum(frozen, get(FZ, e.target))
 
             if t == "chain":
                 if own and mode == "chain_halt":
                     frozen = np.maximum(frozen, sev)
 
-            elif t in ("protocol", "issuer", "curator", "bridge", "mint_authority"):
+            elif t in ("protocol", "issuer", "bridge", "mint_authority"):
                 if own:
                     loss = sev
 
@@ -122,9 +120,7 @@ class Simulator:
                 if own and mode in ("depeg", "unbacked_mint"):
                     loss = sev
                 for e in outs:
-                    if e.type in ("backed_by", "issued_by", "mintable_by", "bridged_via"):
-                        loss = _combine(loss, get(L, e.target))
-                    elif e.type == "traded_on" and node.attrs.get("kind") == "pt":
+                    if e.type in ("backed_by", "issued_by", "mintable_by", "bridged_via", "traded_on"):
                         loss = _combine(loss, get(L, e.target))
 
             elif t == "market":
@@ -132,28 +128,15 @@ class Simulator:
                 if own and mode == "exploit":
                     loss = _combine(loss, sev)
 
-            elif t == "vault":
-                alloc = z
-                for e in outs:
-                    if e.type == "allocates_to":
-                        alloc = alloc + e.weight * get(L, e.target)
-                loss = np.clip(alloc, 0, 1)
-                for e in outs:
-                    if e.type in ("runs_on", "denominated_in"):
-                        loss = _combine(loss, get(L, e.target))
-                    elif e.type == "managed_by":
-                        loss = _combine(loss, get(L, e.target))
-                if own and mode == "exploit":
-                    loss = _combine(loss, sev)
-
             elif t == "position":
-                deposit_targets = [e for e in outs if e.type in ("deposits_in", "holds")]
-                for e in deposit_targets:
-                    loss = _combine(loss, get(L, e.target))
-                via_vault = any(g.nodes[e.target].type == "vault" for e in deposit_targets)
                 for e in outs:
-                    if e.type == "denominated_in" and not via_vault:
+                    if e.type in ("deposits_in", "holds", "denominated_in"):
                         loss = _combine(loss, get(L, e.target))
+                    if e.type == "holds" and get(FZ, e.target).any():
+                        # A held PT cannot be sold while its venue is frozen; its price keeps moving meanwhile.
+                        kind = g.nodes[e.target].attrs.get("kind", "unknown")
+                        move = np.abs(rng.normal(0, 1, n)) * asset_vol(kind) * np.sqrt(get(FZ, e.target) / 8760.0)
+                        loss = _combine(loss, np.clip(move, 0, 0.99))
 
             L[nid], OE[nid], ST[nid], FZ[nid] = loss, oerr, stale, frozen
         return SimResult(L, OE, ST, FZ, sev)

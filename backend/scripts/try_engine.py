@@ -4,7 +4,7 @@ import time
 from risk_engine import PositionRequest, RiskEngine
 from risk_engine.engine import PRESETS
 
-preset = next(p for p in PRESETS if p["id"] == (sys.argv[1] if len(sys.argv) > 1 else "belem-eurcv"))
+preset = next(p for p in PRESETS if p["id"] == (sys.argv[1] if len(sys.argv) > 1 else "pt-reusd-market"))
 eng = RiskEngine()
 t = time.time()
 a = eng.analyze(PositionRequest(preset["kind"], preset["address"], preset["chain_id"], preset["size_usd"]))

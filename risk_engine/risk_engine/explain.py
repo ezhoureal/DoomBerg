@@ -127,5 +127,5 @@ def template(ctx: dict) -> str:
         lines.append("Even a certain failure costs less than exiting; only a larger loss estimate would flip this.")
     else:
         lines.append(f"Exit becomes right above a {_pct(be)} failure probability. "
-                     f"Watch the component's price / feed and the vault's instant liquidity ({_pct(ctx['instant_exit_fraction'])} withdrawable).")
+                     f"Watch the component's price / feed and the instant exit liquidity ({_pct(ctx['instant_exit_fraction'])} available now).")
     return "\n".join(lines)

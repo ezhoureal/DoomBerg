@@ -424,9 +424,9 @@ flowchart LR
     C --> D[4. Decide]
 ```
 
-**1. Discover.** Start from a position and walk downward. Ask each component "what do you rely on?" until reaching the chain. The result is a graph where the dots are things (chain, asset, issuer, oracle, pool, lending market) and the lines are relationships (`priced_by`, `backed_by`, `mintable_by`, `bridged_via`, `settles_on`, `collateral_in`). Each line stores where it came from (which contract call or API response, at which block), so the graph can be checked.
+**1. Discover.** Start from a Pendle PT position and walk downward. Two position types are supported: holding a PT, or supplying to a Morpho market that takes a PT as collateral (the brief's example). Ask each component "what do you rely on?" until reaching the chain. The result is a graph where the dots are things (chain, PT, underlying asset, issuer, Pendle AMM, lending market, oracle, price feed, minter, bridge) and the lines are relationships (`collateral_in`, `priced_by`, `traded_on`, `backed_by`, `issued_by`, `mintable_by`, `bridged_via`, `settles_on`). Each line stores where it came from (which contract call or API response, at which block), so the graph can be checked.
 
-**2. Shock.** Pick a component and a way it fails: oracle stale or manipulated, asset loses its peg, token minted without backing, protocol exploited, bridge frozen or hacked, chain halts, liquidity drains. Rules attached to each kind of line say how the damage travels. For example, a wrong oracle price leads to liquidations or unpaid debt in the lending market, which reduces what the collateral is worth. Running this thousands of times with different severities gives a range of losses, not one guess.
+**2. Shock.** Pick a component and a way it fails: oracle stale or manipulated, asset loses its peg, issuer defaults, token minted without backing, protocol exploited, bridge frozen or hacked, chain halts, liquidity drains. Rules attached to each kind of line say how the damage travels. For example, a depeg of the underlying passes straight through to the PT; in a lending market, an oracle that does not see that drop stops liquidations and turns it into unpaid debt for lenders. Running this thousands of times with different severities gives a range of losses, not one guess.
 
 **3. Price the exit.** Work out what it would cost to sell this position at its real size right now. Larger sales move the price more, and the cost rises as other people rush to leave.
 
@@ -436,7 +436,7 @@ flowchart LR
 
 | Field | Example |
 |---|---|
-| Affected component | Oracle feed for asset X |
+| Affected component | Oracle feed for PT X |
 | Positions exposed | 1 of 10 pockets, $1,000,000 |
 | Loss if it fails | Typical 35%, bad case 60% |
 | Cost to exit now | 11% ($110,000) |
@@ -477,9 +477,9 @@ Exit quotes for the redemption asset come from the KyberSwap aggregator (public,
 
 | Source | What we take from it | Access |
 |---|---|---|
-| Morpho API (GraphQL) | Markets, collateral and loan assets, oracle address, LLTV, market state | Public, no key |
-| Pendle API | PT markets, underlying assets, maturity, PT price, liquidity | Public |
-| On-chain reads (RPC) | What an oracle contract reads from, what a vault holds, which bridge issued a token, who can mint a token and its total supply, who controls a contract | RPC endpoint needed |
+| Morpho API (GraphQL) | PT-collateral markets: loan asset, oracle address, LLTV, market state; token metadata | Public, no key |
+| Pendle API | PT markets, underlying assets, maturity, implied APY, liquidity | Public |
+| On-chain reads (RPC) | What an oracle contract reads from, what an ERC-4626 wrapper holds, who can mint a token and its total supply, who controls a contract | RPC endpoint needed |
 | DefiLlama | Protocol size and token prices | Public for these; yield data may need a paid key |
 | Historical incidents | Severity ranges for the simulation | Compiled by hand, cited in the repo |
 
@@ -496,7 +496,7 @@ Exit quotes for the redemption asset come from the KyberSwap aggregator (public,
 │   │   ├── sources/            # morpho.py (GraphQL), rpc.py (on-chain reads), pendle.py, pricing.py (DefiLlama, KyberSwap)
 │   │   ├── data/               # registry.json (known tokens/chains/protocols), incidents.json (15 cited incidents)
 │   │   ├── graph.py            # node and link types, evidence records
-│   │   ├── discovery.py        # traces a vault / market / token / wallet into the dependency graph
+│   │   ├── discovery.py        # traces a held PT, or a Morpho market with PT collateral, into the dependency graph
 │   │   ├── failures.py         # failure modes, hazard priors and risk-factor multipliers
 │   │   ├── probability.py      # Gamma-Poisson failure probability + Bayesian alert update
 │   │   ├── propagation.py      # Monte Carlo propagation of a shock along the graph
@@ -504,7 +504,7 @@ Exit quotes for the redemption asset come from the KyberSwap aggregator (public,
 │   │   ├── decision.py         # the rule in section 9, break-even table, confidence
 │   │   ├── explain.py          # LLM narrative (or template fallback)
 │   │   └── engine.py           # RiskEngine: analyze / screen / shock / replay, presets
-│   └── tests/                  # offline tests (brief examples, LLTV buffer, blind oracle, ...)
+│   └── tests/                  # offline tests on synthetic PT graphs (brief examples, LLTV buffer, blind oracle, ...)
 ├── backend/                    # FastAPI wrapper (app/api.py), serves frontend/dist if built
 └── frontend/                   # React UI: position form, graph, inspector, answer panel
 ```
@@ -526,7 +526,7 @@ npm run dev        # API on http://127.0.0.1:8000 and UI on http://localhost:517
 
 Optional settings go in `backend/.env` (see `.env.example`): `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for the narrative, and `RPC_URL_<chainId>` to use your own RPC endpoints instead of the public defaults.
 
-**Main API endpoints:** `POST /api/analyze` (trace a position and screen every node), `POST /api/shock` (break a component and get the verdict), `POST /api/replay` (re-run a past incident), `GET /api/wallet/{address}`, `GET /api/vaults/rockawayx`, `GET /api/presets`.
+**Main API endpoints:** `POST /api/analyze` (trace a position and screen every node), `POST /api/shock` (break a component and get the verdict), `POST /api/replay` (re-run a past incident), `GET /api/presets` (reference PTs), `GET /api/catalog`.
 
 ---
 

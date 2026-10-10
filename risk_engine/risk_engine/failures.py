@@ -34,14 +34,12 @@ MODES: dict[str, FailureMode] = {m.id: m for m in [
                 "The off-chain entity behind the token cannot honour redemptions.", 15),
     FailureMode("bridge_hack", "Bridge hacked or frozen", ("bridge",),
                 "Locked collateral is stolen or the bridge issues copies with nothing locked.", 30),
-    # Morpho markets and vault instances share the protocol code, so code risk lives on the protocol node.
+    # Morpho markets share the protocol code, so code risk lives on the protocol node.
     FailureMode("exploit", "Smart-contract exploit", ("protocol", "amm"),
                 "A bug is abused to take funds from the contract.", 25),
-    FailureMode("curator_misallocation", "Curator allocates into a bad market", ("curator",),
-                "The vault manager routes funds to a market that then takes losses.", 10),
     FailureMode("chain_halt", "Chain halts or is congested", ("chain",),
-                "Blocks stop; nobody can liquidate, repay or withdraw.", 50),
-    FailureMode("liquidity_drain", "Liquidity drains (bank run)", ("market", "vault", "amm"),
+                "Blocks stop; nobody can liquidate, repay, withdraw or sell.", 50),
+    FailureMode("liquidity_drain", "Liquidity drains (bank run)", ("market", "amm"),
                 "Everyone withdraws at once; what is left is slow or costly to exit.", 10),
 ]}
 
@@ -69,7 +67,6 @@ BASE: dict[str, dict] = {
     "issuer_default":        {"k": 2, "T": 60, "sev": (0.40, 3)},
     "bridge_hack":           {"k": 10, "T": 150, "sev": (0.70, 3)},
     "exploit":               {"k": 40, "T": 1000, "sev": (0.45, 2.5)},
-    "curator_misallocation": {"k": 3, "T": 100, "sev": (0.15, 4)},
     "chain_halt":            {"k": 2, "T": 40, "sev": (4.0, 0)},          # hours halted (exponential mean)
     "liquidity_drain":       {"k": 5, "T": 100, "sev": (0.08, 6)},
 }
@@ -89,8 +86,6 @@ def applicable_modes(node_type: str, node_attrs: dict | None = None) -> list[Fai
         if node_type not in m.applies_to:
             continue
         if m.id == "unbacked_mint" and node_type == "asset" and attrs.get("kind") in ("pt",):
-            continue
-        if m.id == "liquidity_drain" and node_type == "vault" and attrs.get("is_root_vault") is False:
             continue
         out.append(m)
     return out
@@ -183,11 +178,6 @@ def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[floa
         if u > 0.85:
             f = 1 + 10 * (u - 0.85)
             m(round(f, 2), f"utilization already {u:.0%}")
-    elif mode == "curator_misallocation":
-        if rf.get("exotic_share", 0) > 0.5:
-            m(2.0, f"{rf['exotic_share']:.0%} of vault in non-blue-chip collateral")
-        if rf.get("verified_curator"):
-            m(0.7, "verified curator")
 
     # Gamma(k + 0.5, T) is the Jeffreys posterior for a Poisson rate; the multiplier scales the rate.
     return k + 0.5, T / mult, reasons

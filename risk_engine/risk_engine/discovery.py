@@ -1,4 +1,4 @@
-"""Stage 1 - Discover: walk from a position down to the settlement chain.
+"""Stage 1 - Discover: walk from a Pendle PT position (held, or used as Morpho collateral) down to the settlement chain.
 
 Every component is asked "what do you rely on?" using, in order of preference:
 on-chain reads (RPC), protocol APIs (Morpho, Pendle), price APIs (DefiLlama), and finally the
@@ -13,7 +13,6 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from .graph import DependencyGraph, Edge, Evidence, Node
 from .sources import morpho, pendle
@@ -28,9 +27,7 @@ KNOWN_ADDRESSES = {  # underlying assets referenced by symbol in the registry
         "steth": "0xae7ab96520de3a18e5e111b5eaab095312d7fe84",
         "usde": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3"},
 }
-BLUE_CHIP_KINDS = {"native_wrapped", "lst", "wrapped_btc", "fiat_stable", "eur_stable", "gold"}
 MAX_ASSET_DEPTH = 4
-MIN_ALLOCATION_SHARE = 0.002
 
 # Legacy (ZeppelinOS) proxy slots used by USDC-style FiatToken proxies.
 ZOS_IMPL_SLOT = "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3"
@@ -40,8 +37,8 @@ MASTER_MINTER = "0x35d99f35"
 
 @dataclass
 class PositionRequest:
-    kind: str = "vault"              # vault | market | token
-    address: str = ""                # vault / token address or Morpho market id
+    kind: str = "token"              # token (hold a PT) | market (supply to a Morpho market with PT collateral)
+    address: str = ""                # PT token address or Morpho market id
     chain_id: int = 1
     size_usd: float = 1_000_000.0
     book_usd: float = 10_000_000.0
@@ -63,7 +60,6 @@ class Discovery:
         self.g = DependencyGraph()
         self.rpcs: dict[int, Rpc] = {}
         self.warnings: list[str] = []
-        self.root_vault: str | None = None
         self.t0 = time.time()
 
     # ------------------------------------------------------------------ helpers
@@ -84,39 +80,25 @@ class Discovery:
         self.g.add_node(pos)
         self.g.root = pos.id
 
-        if r.kind == "vault":
-            v2 = morpho.vault_v2(addr, r.chain_id)
-            if v2:
-                vid = self.add_vault_v2(v2)
-            else:
-                v1 = morpho.vault_v1(addr, r.chain_id)
-                if not v1:
-                    raise ValueError(f"No Morpho vault {addr} found on chain {r.chain_id}")
-                vid = self.add_vault_v1(v1)
-            self.root_vault = vid
-            self.g.nodes[vid].attrs["is_root_vault"] = True
-            self.link(pos.id, vid, "deposits_in", Evidence("user", f"Deposit of ${r.size_usd:,.0f}"))
-            pos.label = r.label or f"${r.size_usd / 1e6:,.2f}M in {self.g.nodes[vid].label}"
-            loan = next((e.target for e in self.g.out_edges(vid) if e.type == "denominated_in"), None)
-            if loan:
-                self.link(pos.id, loan, "denominated_in", Evidence("morpho-api", "Position is redeemed in the vault asset"))
+        if r.kind == "token":
+            a = morpho.asset(addr, r.chain_id) or {"address": addr, "symbol": None, "decimals": None, "tags": [], "price": None}
+            aid = self.add_asset(a, r.chain_id, 0)
+            if self.g.nodes[aid].attrs["kind"] != "pt":
+                raise ValueError(f"{self.g.nodes[aid].label} ({addr}) is not a Pendle PT token; only PT positions are supported")
+            self.link(pos.id, aid, "holds", Evidence("user", f"Holding ${r.size_usd:,.0f}"))
+            pos.label = r.label or f"${r.size_usd / 1e6:,.2f}M of {self.g.nodes[aid].label}"
         elif r.kind == "market":
             m = morpho.market(addr, r.chain_id)
             if not m:
                 raise ValueError(f"No Morpho market {addr} on chain {r.chain_id}")
+            coll = (m.get("collateralAsset") or {}).get("symbol") or "?"
+            if not coll.lower().startswith("pt-"):
+                raise ValueError(f"Market collateral {coll} is not a Pendle PT; only markets with PT collateral are supported")
             mid = self.add_market(m, r.chain_id)
-            self.g.nodes[mid].attrs["is_root_vault"] = True
-            self.root_vault = mid
             self.link(pos.id, mid, "deposits_in", Evidence("user", f"Supply of ${r.size_usd:,.0f}"))
-            loan = m["loanAsset"]
-            lid = self.add_asset(loan, r.chain_id, 1)
+            lid = self.add_asset(m["loanAsset"], r.chain_id, 1)
             self.link(pos.id, lid, "denominated_in", Evidence("morpho-api", "Supply is redeemed in the loan asset"))
             pos.label = r.label or f"${r.size_usd / 1e6:,.2f}M supplied to {self.g.nodes[mid].label}"
-        elif r.kind == "token":
-            a = morpho.asset(addr, r.chain_id) or {"address": addr, "symbol": None, "decimals": None, "tags": [], "price": None}
-            aid = self.add_asset(a, r.chain_id, 0)
-            self.link(pos.id, aid, "holds", Evidence("user", f"Holding ${r.size_usd:,.0f}"))
-            pos.label = r.label or f"${r.size_usd / 1e6:,.2f}M of {self.g.nodes[aid].label}"
         else:
             raise ValueError(f"Unsupported position kind: {r.kind}")
 
@@ -159,102 +141,6 @@ class Discovery:
                              risk_factors=rf, evidence=ev))
         self.link(pid, self.add_chain(chain_id), "settles_on", Evidence("registry", "Contracts deployed on this chain"))
         return pid
-
-    # ------------------------------------------------------------------ vaults
-    def add_vault_v2(self, v: dict) -> str:
-        chain_id = v["chain"]["id"]
-        vid = f"vault:{chain_id}:{v['address'].lower()}"
-        curators = [c["name"] for c in (v.get("curators") or {}).get("items", [])]
-        tvl = v.get("totalAssetsUsd") or 0
-        timelocks = v.get("timelocks") or []
-        node = Node(vid, "vault", v["name"], chain_id, v["address"], attrs={
-            "version": "Morpho Vault V2", "symbol": v.get("symbol"), "tvl_usd": tvl,
-            "liquidity_usd": v.get("liquidityUsd"), "idle_usd": v.get("idleAssetsUsd"),
-            "net_apy": v.get("netApy"), "performance_fee": v.get("performanceFee"), "management_fee": v.get("managementFee"),
-            "curators": curators, "owner": (v.get("owner") or {}).get("address"),
-            "max_timelock_s": max([int(t.get("duration") or 0) for t in timelocks], default=None),
-            "url": f"https://app.morpho.org/vault?vault={v['address']}&network={v['chain']['network'].lower()}",
-            "explorer": explorer(chain_id, v["address"]),
-            "warnings": [w["type"] for w in v.get("warnings") or []],
-        }, evidence=[Evidence("morpho-api", f"vaultV2ByAddress: TVL ${tvl:,.0f}, instant liquidity ${v.get('liquidityUsd') or 0:,.0f}", ref="vaultV2ByAddress")])
-        self.g.add_node(node)
-        self.link(vid, self.add_protocol("morpho_vault_v2", chain_id), "runs_on", Evidence("morpho-api", "Vault V2 contract"))
-        self.link(vid, self.add_chain(chain_id), "settles_on", Evidence("morpho-api", f"Vault deployed on {v['chain']['network']}"))
-        loan = self.add_asset(v["asset"], chain_id, 1)
-        self.link(vid, loan, "denominated_in", Evidence("morpho-api", f"Vault asset {v['asset']['symbol']}"))
-        if curators or (v.get("curator") or {}).get("address"):
-            self.add_curator(vid, curators[0] if curators else short(v["curator"]["address"]),
-                             (v.get("curator") or {}).get("address"), chain_id, True)
-
-        positions = []
-        for a in (v.get("adapters") or {}).get("items", []):
-            if a.get("__typename") == "MetaMorphoAdapter" and a.get("metaMorpho"):
-                inner = morpho.vault_v1(a["metaMorpho"]["address"], chain_id)
-                if inner and (a.get("assetsUsd") or 0) > 0:
-                    iid = self.add_vault_v1(inner)
-                    share = (a.get("assetsUsd") or 0) / tvl if tvl else 0
-                    self.link(vid, iid, "allocates_to", Evidence("morpho-api", f"MetaMorpho adapter holds ${a.get('assetsUsd') or 0:,.0f}"), weight=share)
-            for p in (a.get("positions") or {}).get("items", []):
-                usd = (p.get("state") or {}).get("supplyAssetsUsd") or 0
-                positions.append((usd, p["market"], a.get("forceDeallocatePenalty")))
-        self._add_allocations(vid, positions, tvl, chain_id)
-        return vid
-
-    def add_vault_v1(self, v: dict) -> str:
-        chain_id = v["chain"]["id"]
-        vid = f"vault:{chain_id}:{v['address'].lower()}"
-        st = v.get("state") or {}
-        tvl = st.get("totalAssetsUsd") or 0
-        curators = [c["name"] for c in st.get("curators") or []]
-        self.g.add_node(Node(vid, "vault", v["name"], chain_id, v["address"], attrs={
-            "version": "MetaMorpho V1", "symbol": v.get("symbol"), "tvl_usd": tvl,
-            "liquidity_usd": (v.get("liquidity") or {}).get("usd"), "net_apy": st.get("netApy"),
-            "performance_fee": st.get("fee"), "curators": curators, "owner": st.get("owner"),
-            "max_timelock_s": int(st.get("timelock") or 0),
-            "url": f"https://app.morpho.org/vault?vault={v['address']}",
-            "explorer": explorer(chain_id, v["address"]),
-            "warnings": [w["type"] for w in v.get("warnings") or []],
-        }, evidence=[Evidence("morpho-api", f"vaultByAddress: TVL ${tvl:,.0f}", ref="vaultByAddress")]))
-        self.link(vid, self.add_protocol("metamorpho", chain_id), "runs_on", Evidence("morpho-api", "MetaMorpho contract"))
-        self.link(vid, self.add_chain(chain_id), "settles_on", Evidence("morpho-api", "Vault chain"))
-        loan = self.add_asset(v["asset"], chain_id, 1)
-        self.link(vid, loan, "denominated_in", Evidence("morpho-api", f"Vault asset {v['asset']['symbol']}"))
-        if curators or st.get("curator"):
-            self.add_curator(vid, curators[0] if curators else short(st.get("curator")), st.get("curator"), chain_id, True)
-        positions = [((a.get("supplyAssetsUsd") or 0), a["market"], None) for a in st.get("allocation") or []]
-        self._add_allocations(vid, positions, tvl, chain_id)
-        return vid
-
-    def _add_allocations(self, vid: str, positions: list, tvl: float, chain_id: int):
-        positions.sort(key=lambda x: -x[0])
-        allocated = sum(p[0] for p in positions)
-        exotic = 0.0
-        for usd, m, penalty in positions:
-            share = usd / tvl if tvl else 0
-            if share < MIN_ALLOCATION_SHARE or not m.get("collateralAsset"):
-                continue
-            mid = self.add_market(m, chain_id)
-            self.link(vid, mid, "allocates_to",
-                      Evidence("morpho-api", f"Supplies ${usd:,.0f} ({share:.1%} of vault)", ref=f"market {m['marketId']}"),
-                      weight=share, supply_usd=usd, force_deallocate_penalty=penalty)
-            kind = self.g.nodes[f"asset:{chain_id}:{m['collateralAsset']['address'].lower()}"].attrs.get("kind")
-            if kind not in BLUE_CHIP_KINDS:
-                exotic += share
-        vn = self.g.nodes[vid]
-        vn.attrs["allocated_share"] = allocated / tvl if tvl else 0
-        vn.attrs["idle_share"] = max(0.0, 1 - allocated / tvl) if tvl else 0
-        vn.attrs["exotic_share"] = exotic
-        for e in self.g.out_edges(vid):
-            if e.type == "managed_by":
-                self.g.nodes[e.target].risk_factors["exotic_share"] = exotic
-
-    def add_curator(self, vid: str, name: str, address: str | None, chain_id: int, verified: bool):
-        cid = f"curator:{name.lower()}"
-        self.g.add_node(Node(cid, "curator", name, chain_id, address,
-                             attrs={"address": address, "explorer": explorer(chain_id, address)},
-                             risk_factors={"verified_curator": verified},
-                             evidence=[Evidence("morpho-api", f"Curator of {self.g.nodes[vid].label}", ref="curators")]))
-        self.link(vid, cid, "managed_by", Evidence("morpho-api", "Curator sets caps and allocations"))
 
     # ------------------------------------------------------------------ markets
     def add_market(self, m: dict, chain_id: int) -> str:
@@ -423,7 +309,6 @@ class Discovery:
                 self.g.add_node(Node(amm, "amm", f"Pendle market {pt['name']}", chain_id, pt["market"], attrs={
                     "liquidity_usd": pt.get("liquidity_usd"), "expiry": exp, "implied_apy": pt.get("implied_apy"),
                     "subtitle": f"expiry {exp} - liq ${(pt.get('liquidity_usd') or 0) / 1e6:,.1f}M", "url": pt["url"]},
-                    risk_factors={"utilization": None},
                     evidence=[Evidence("pendle-api", f"PT market {pt['market']}, liquidity ${pt.get('liquidity_usd') or 0:,.0f}, expiry {exp}",
                                        ref=f"/v1/{chain_id}/markets/active")]))
                 self.link(aid, amm, "traded_on", Evidence("pendle-api", "PT is priced and exited through this AMM"))
@@ -516,7 +401,7 @@ class Discovery:
 
     # ------------------------------------------------------------------ layout hint
     def assign_layers(self):
-        order = {"position": 0, "vault": 1, "curator": 2, "market": 2, "oracle": 3, "asset": 3, "amm": 4, "feed": 4,
-                 "issuer": 5, "mint_authority": 5, "bridge": 5, "protocol": 6, "chain": 7}
+        order = {"position": 0, "market": 1, "oracle": 2, "asset": 2, "amm": 3, "feed": 3,
+                 "issuer": 4, "mint_authority": 4, "bridge": 4, "protocol": 5, "chain": 6}
         for n in self.g.nodes.values():
             n.layer = order.get(n.type, 3)
