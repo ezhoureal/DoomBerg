@@ -238,6 +238,10 @@ function NodeDetail({ snapshot, risk, warnings, node, onSelect, onAddIncident }:
         {node.type} · <span className={`chain chain-${node.chain}`}>{node.chain}</span>
       </p>
       {node.description && <p className="small">{node.description}</p>}
+      {snapshot.monitor?.nodeId === node.id && <p className="muted small">
+        Monitor warnings do not assign failure probabilities. To explore financial impact,
+        use the incident simulator below with explicit assumptions.
+      </p>}
 
       {ws.length > 0 && (
         <div className="card">
@@ -381,6 +385,7 @@ function formatMetric(k: string, v: number | undefined) {
   if (k === "utilization" || k === "lltv" || k === "tvlShareOfChain") return pct(v, 1);
   if (/Pct|Apr/.test(k)) return `${v}%`;
   if (/Sec/.test(k)) return `${v}s`;
+  if (/Ms$/.test(k)) return `${v}ms`;
   return String(v);
 }
 

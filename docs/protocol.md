@@ -2,9 +2,17 @@
 
 Canonical types: [`web/src/protocol.ts`](../web/src/protocol.ts). Mock instance: [`web/src/data/mockSnapshot.json`](../web/src/data/mockSnapshot.json).
 
-The backend returns one `RiskSnapshot` JSON document. It sends **only observable facts**: the graph, metrics, incidents and exit quotes. Every risk number (reach, expected loss, VaR, decisions, warnings) is derived in the frontend model (`web/src/model/`), so the methodology is in one place where it can be audited.
+The backend returns one `RiskSnapshot` JSON document containing the graph, metrics, incidents, exit quotes and model inputs. Measurements must be distinguished from assumptions: `pFail`, `lossGivenFailure` and loss-transmission factors are modeled inputs, not directly observable facts. In this demo, portfolio data, quotes and these inputs are mocked. Portfolio risk numbers (reach, expected loss, VaR and decisions) are derived in the frontend model (`web/src/model/`). Node warnings merge backend flags with client-side rules.
 
-To use a live backend, set `VITE_SNAPSHOT_URL=https://.../snapshot` when running `npm run dev`/`build`.
+The local default polls `/api/snapshot`, proxied by Vite to Python at `http://127.0.0.1:8000/snapshot`. Override with `VITE_SNAPSHOT_URL` or explicitly use the static mock with `VITE_USE_MOCK=true`. A connected backend may still serve simulated data and must keep `source: "mock"` in that case.
+
+## Python monitor integration
+
+The adapter overlays synthetic readings onto `oracle-chainlink-btc`. Numeric keys include `priceUsd`, `stalenessSec`, `readResponseMs`, `priceChangePct`, `priceChangeIntervalSec`, and consecutive read counters. Unknown values are omitted (not null or zero). `priceChangePct` is not `deviationPct`: the latter requires a separate market reference.
+
+Backend warning codes use a `monitor.` prefix and carry `severity` and `message`. Active warnings disappear when their condition clears; the monitor reports recovery until enough healthy readings arrive. Flags are not incidents and do not directly modify expected loss or STAY/WATCH/EXIT. No failure probabilities are derived automatically from a warning.
+
+Optional top-level `monitor` metadata contains `nodeId`, `runId`, `sequence`, `scenario`, `status`, `observedAt`, `receivedAt`, `intervalSeconds`, and `simulation`. `observedAt` is accelerated simulation time. `asOf` and `receivedAt` are wall-clock timestamps. Clients use advancing run/sequence identifiers and request success to track connection freshness. Local incident edits are a separate overlay and survive refreshes.
 
 ## Top level
 

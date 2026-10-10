@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import type { Incident, RiskSnapshot, Warning } from "./protocol";
-import { loadSnapshot } from "./data/source";
+import type { Incident, Warning } from "./protocol";
+import { useRiskSnapshot } from "./data/useRiskSnapshot";
+import { mergeIncidents } from "./data/incidentEdits";
 import { computePortfolioRisk } from "./model/risk";
 import { nodeWarnings } from "./model/warnings";
 import { GraphView, type Selection } from "./components/GraphView";
@@ -9,21 +10,16 @@ import { Sidebar } from "./components/Sidebar";
 import { DetailPanel } from "./components/DetailPanel";
 
 export function App() {
-  const [snapshot, setSnapshot] = useState<RiskSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const { snapshot, error, connected, staticMock } = useRiskSnapshot();
+  const [localIncidents, setLocalIncidents] = useState<Incident[]>([]);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, Incident["status"]>>({});
+  const [hiddenIncidents, setHiddenIncidents] = useState<string[]>([]);
   const [selection, setSelection] = useState<Selection>(null);
   const [focusPositionId, setFocusPositionId] = useState<string | null>(null);
   const [chainFilter, setChainFilter] = useState("all");
 
-  useEffect(() => {
-    loadSnapshot()
-      .then((s) => {
-        setSnapshot(s);
-        setIncidents(s.incidents);
-      })
-      .catch((e) => setError(String(e)));
-  }, []);
+  const incidents = useMemo(() => mergeIncidents(snapshot?.incidents ?? [], localIncidents,
+    statusOverrides, hiddenIncidents), [snapshot, localIncidents, statusOverrides, hiddenIncidents]);
 
   const risk = useMemo(() => (snapshot ? computePortfolioRisk(snapshot, incidents) : null), [snapshot, incidents]);
   const warnings = useMemo(() => {
@@ -32,8 +28,9 @@ export function App() {
     return m;
   }, [snapshot, risk]);
 
-  if (error) return <div className="splash error">{error}</div>;
-  if (!snapshot || !risk) return <div className="splash">Loading snapshot…</div>;
+  if (!snapshot || !risk) return <div className={`splash ${error ? "error" : ""}`}>
+    {error || "Connecting to Python backend…"}{error && <span>Retrying automatically…</span>}
+  </div>;
 
   return (
     <div className="app">
@@ -52,6 +49,23 @@ export function App() {
           {snapshot.source === "mock" ? "MOCK DATA" : "LIVE"} · {new Date(snapshot.asOf).toISOString().slice(0, 16).replace("T", " ")} UTC
         </div>
       </header>
+      <div className={`monitor-banner ${error ? "disconnected" : ""}`} role="status">
+        <span>
+          <b>{staticMock ? "STATIC MOCK" : connected ? "BACKEND CONNECTED" : "DISCONNECTED"}</b>
+          {error ? ` · ${error} Decisions may be outdated.` : snapshot.monitor
+            ? ` · Oracle: ${snapshot.monitor.status} · Reading #${snapshot.monitor.sequence}` : ""}
+          {snapshot.source === "mock" && " · Simulated data; portfolio losses and decisions use demo assumptions."}
+        </span>
+        <div className="monitor-controls">
+          {snapshot.monitor && <button onClick={() => setSelection({ kind: "node", id: snapshot.monitor!.nodeId })}>
+            Inspect monitored oracle
+          </button>}
+          {(localIncidents.length > 0 || hiddenIncidents.length > 0 || Object.keys(statusOverrides).length > 0) &&
+            <button onClick={() => { setLocalIncidents([]); setHiddenIncidents([]); setStatusOverrides({}); }}>
+              Reset incident edits
+            </button>}
+        </div>
+      </div>
       <Sidebar
         snapshot={snapshot}
         risk={risk}
@@ -62,12 +76,11 @@ export function App() {
         onFocus={setFocusPositionId}
         chainFilter={chainFilter}
         onChainFilter={setChainFilter}
-        onToggleIncident={(id) =>
-          setIncidents((xs) =>
-            xs.map((i) => (i.id === id ? { ...i, status: i.status === "active" ? "resolved" : "active" } : i)),
-          )
-        }
-        onRemoveIncident={(id) => setIncidents((xs) => xs.filter((i) => i.id !== id))}
+        onToggleIncident={(id) => {
+          const current = incidents.find((i) => i.id === id);
+          if (current) setStatusOverrides((xs) => ({ ...xs, [id]: current.status === "active" ? "resolved" : "active" }));
+        }}
+        onRemoveIncident={(id) => setHiddenIncidents((xs) => [...xs, id])}
       />
       <main>
         <ReactFlowProvider>
@@ -88,7 +101,7 @@ export function App() {
         warnings={warnings}
         selection={selection}
         onSelect={setSelection}
-        onAddIncident={(inc) => setIncidents((xs) => [inc, ...xs])}
+        onAddIncident={(inc) => setLocalIncidents((xs) => [inc, ...xs])}
       />
     </div>
   );
