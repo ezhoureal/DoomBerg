@@ -74,7 +74,7 @@ export default function Answer({ r, onClose }: { r: ShockResult; onClose: () => 
           <div className="path">
             {path.map((h, i) => (
               <div key={h.node_id} className="hop">
-                {i > 0 && <div className="hop-edge">{h.edge_type?.replace("_", " ")}{h.edge_weight !== null && h.edge_type === "allocates_to" ? ` ${pct(h.edge_weight, 0)}` : ""}</div>}
+                {i > 0 && <div className="hop-edge">{h.edge_type?.replace("_", " ")}</div>}
                 <div className="hop-node" style={{ borderColor: TYPE_META[h.type]?.color }}>
                   <span>{h.label}</span><b style={{ color: lossColor(h.mean_loss) }}>{h.mean_loss > 0.0001 ? `−${pct(h.mean_loss)}` : "0"}</b>
                 </div>

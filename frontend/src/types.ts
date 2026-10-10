@@ -35,7 +35,7 @@ export type ExitInfo = {
 
 export type Analysis = {
   position_id: string;
-  request: { kind: string; address: string; chain_id: number; size_usd: number; book_usd: number; label?: string | null };
+  request: { kind: PositionKind; address: string; chain_id: number; size_usd: number; book_usd: number; label?: string | null };
   graph: { root: string; nodes: GNode[]; edges: GEdge[] };
   screening: { horizon_days: number; total_expected_loss_pct: number; p_any_loss_event: number; top: ScreenRow[] };
   exit_now: ExitInfo;
@@ -45,7 +45,7 @@ export type Analysis = {
 export type Hop = { node_id: string; label: string; type: string; mean_loss: number; edge_type: string | null; edge_weight: number | null; why: string | null };
 
 export type ShockResult = {
-  position: { label: string; size_usd: number; book_usd: number; kind: string };
+  position: { label: string; size_usd: number; book_usd: number; kind: PositionKind };
   shock: { node_id: string; node_label: string; node_type: string; mode: string; mode_label: string; description: string; alert: string; alert_label: string;
     severity: Summary; incident?: any };
   probability: { annual_rate: number; annual_rate_ci: [number, number]; prior_p: number; p: number; p_ci: [number, number]; likelihood_ratio: number | null; horizon_days: number; reasons: string[] };
@@ -54,7 +54,7 @@ export type ShockResult = {
   decision: {
     verdict: "STAY" | "EXIT"; confidence: number; probability: number; probability_source: string;
     loss_given_failure: { mean: number; typical: number; bad_case: number };
-    expected_loss_pct: number; expected_loss_usd: number; bad_case_usd: number; exit_cost_pct: number; exit_cost_usd: number;
+    expected_loss_pct: number; expected_loss_usd: number; bad_case_usd: number; exit_cost_pct: number; exit_cost_usd: number; instant_fraction: number; instant_fraction_calm: number;
     break_even_probability: number | null; avoidable_loss_usd: number; book_impact_pct: number | null; position_share_of_book: number | null;
     reasons: string[]; break_even_table: { loss_if_fails: number; exit_above: number | null }[];
   };
@@ -68,7 +68,9 @@ export type ShockResult = {
 
 export type Summary = { mean: number; p05: number; p50: number; p95: number; p99: number; prob_any_loss: number };
 
-export type Preset = { id: string; label: string; kind: string; chain_id: number; address: string; size_usd: number; note: string };
+export type PositionKind = "token" | "market";
+
+export type Preset = { id: string; label: string; kind: PositionKind; chain_id: number; address: string; size_usd: number; note: string };
 
 export type Catalog = {
   modes: { id: string; label: string; applies_to: string[]; description: string }[];

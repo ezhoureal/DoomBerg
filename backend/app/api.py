@@ -15,7 +15,6 @@ from risk_engine import PositionRequest, RiskEngine
 from risk_engine.engine import INCIDENTS, PRESETS
 from risk_engine.failures import MODES
 from risk_engine.probability import ALERT_LEVELS
-from risk_engine.sources import morpho
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -24,11 +23,9 @@ app = FastAPI(title="DeFi Dependency Risk Engine", version="0.1.0",
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 engine = RiskEngine()
 
-ROCKAWAYX = ["0xbBacDCFB9691DFA1066aB29edfcc4A73f6DEf918"]
-
 
 class AnalyzeBody(BaseModel):
-    kind: Literal["vault", "market", "token"] = "vault"
+    kind: Literal["token", "market"] = "token"
     address: str
     chain_id: int = 1
     size_usd: float = Field(1_000_000, gt=0)
@@ -124,40 +121,6 @@ def replay(body: ReplayBody):
         raise HTTPException(404, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
-
-
-@app.get("/api/wallet/{address}")
-def wallet(address: str, chain_id: int = 1):
-    u = morpho.user_positions(address, chain_id)
-    if not u:
-        raise HTTPException(404, "No Morpho positions found for this wallet on this chain")
-    out = []
-    for p in u.get("vaultV2Positions") or []:
-        if (p.get("assetsUsd") or 0) > 1:
-            out.append({"kind": "vault", "address": p["vault"]["address"], "label": p["vault"]["name"], "size_usd": p["assetsUsd"],
-                        "asset": p["vault"]["asset"]["symbol"]})
-    for p in u.get("vaultPositions") or []:
-        usd = (p.get("state") or {}).get("assetsUsd") or 0
-        if usd > 1:
-            out.append({"kind": "vault", "address": p["vault"]["address"], "label": p["vault"]["name"], "size_usd": usd,
-                        "asset": p["vault"]["asset"]["symbol"]})
-    for p in u.get("marketPositions") or []:
-        st = p.get("state") or {}
-        if (st.get("supplyAssetsUsd") or 0) > 1:
-            m = p["market"]
-            out.append({"kind": "market", "address": m["marketId"], "size_usd": st["supplyAssetsUsd"],
-                        "label": f"{(m.get('collateralAsset') or {}).get('symbol')} / {m['loanAsset']['symbol']} (supply)",
-                        "asset": m["loanAsset"]["symbol"]})
-    out.sort(key=lambda x: -x["size_usd"])
-    return {"address": address, "chain_id": chain_id, "positions": out}
-
-
-@app.get("/api/vaults/rockawayx")
-def rockawayx_vaults():
-    vs = morpho.vaults_by_curator(ROCKAWAYX)
-    return sorted(({"address": v["address"], "name": v["name"], "chain_id": v["chain"]["id"], "network": v["chain"]["network"],
-                    "asset": v["asset"]["symbol"], "tvl_usd": v.get("totalAssetsUsd") or 0, "liquidity_usd": v.get("liquidityUsd") or 0,
-                    "net_apy": v.get("netApy")} for v in vs if (v.get("totalAssetsUsd") or 0) > 1000), key=lambda v: -v["tvl_usd"])
 
 
 DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"

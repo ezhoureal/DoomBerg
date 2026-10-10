@@ -96,19 +96,18 @@ function Inner({ analysis, result, selected, onSelect, colorMode, fitKey }: Prop
   const edges: Edge[] = useMemo(() => analysis.graph.edges.map((e) => {
     const hot = pathEdges.has(`${e.source}>${e.target}`);
     const loss = result ? result.node_losses[e.target] ?? 0 : 0;
-    const w = e.type === "allocates_to" ? 1 + 5 * e.weight : 1.2;
     return {
       id: e.id,
       source: e.source,
       target: e.target,
       animated: hot,
-      label: hot || e.type === "allocates_to" ? (e.type === "allocates_to" ? `${pct(e.weight, 0)}` : e.type.replace("_", " ")) : undefined,
+      label: hot ? e.type.replace("_", " ") : undefined,
       labelStyle: { fill: hot ? "#ffb4bb" : "#8b97b5", fontSize: 10, fontWeight: 600 },
       labelBgStyle: { fill: "#0b1020", fillOpacity: 0.85 },
       labelBgPadding: [4, 2] as [number, number],
       style: {
         stroke: hot ? "#ff5d6c" : result && loss > 0.0001 ? "rgba(255,159,67,0.45)" : "rgba(148,163,200,0.22)",
-        strokeWidth: hot ? Math.max(2.2, w) : w,
+        strokeWidth: hot ? 2.2 : 1.2,
       },
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: hot ? "#ff5d6c" : "rgba(148,163,200,0.45)" },
     };

@@ -34,9 +34,6 @@
   },
   "protocols": {
     "morpho_blue":  {"label": "Morpho Blue (core)", "immutable_core": true, "audited_major": true, "launched": "2024-01-01", "llama": "morpho-blue", "source": "https://docs.morpho.org/"},
-    "morpho_vault_v2": {"label": "Morpho Vault V2", "audited_major": true, "launched": "2025-09-01", "source": "https://docs.morpho.org/learn/concepts/vault-v2/"},
-    "metamorpho":   {"label": "MetaMorpho Vault V1", "audited_major": true, "launched": "2024-01-01", "source": "https://docs.morpho.org/"},
-    "pendle_v2":    {"label": "Pendle V2", "audited_major": true, "launched": "2022-11-01", "llama": "pendle", "source": "https://docs.pendle.finance/"},
-    "chainlink":    {"label": "Chainlink Data Feeds", "audited_major": true, "launched": "2019-05-30", "source": "https://data.chain.link/"}
+    "pendle_v2":    {"label": "Pendle V2", "audited_major": true, "launched": "2022-11-01", "llama": "pendle", "source": "https://docs.pendle.finance/"}
   }
 }

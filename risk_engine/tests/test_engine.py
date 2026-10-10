@@ -1,34 +1,56 @@
-"""Offline tests on a synthetic graph: no network needed."""
+"""Offline tests on a synthetic PT graph: no network needed."""
 
 import numpy as np
 
 from risk_engine.decision import decide
+from risk_engine.failures import applicable_modes
 from risk_engine.graph import DependencyGraph, Edge, Node
 from risk_engine.probability import failure_probability
 from risk_engine.propagation import Simulator
 
 
-def build(tracks: bool = True, util: float = 0.9, lltv: float = 0.86, weight: float = 1.0) -> DependencyGraph:
+def add(g: DependencyGraph, nodes: list[Node], edges: list[tuple[str, str, str]]) -> DependencyGraph:
+    for n in nodes:
+        g.add_node(n)
+    for u, v, t in edges:
+        g.add_edge(Edge(u, v, t))
+    return g
+
+
+def pt_subgraph() -> DependencyGraph:
     g = DependencyGraph()
-    for n in [
+    g.root = "position"
+    return add(g, [
         Node("position", "position", "pos"),
-        Node("vault", "vault", "vault", attrs={"liquidity_usd": 2e6, "net_apy": 0.05}),
-        Node("market", "market", "coll/usdc", attrs={"lltv": lltv, "utilization": util}),
-        Node("coll", "asset", "COLL", attrs={"kind": "synthetic_stable"}),
+        Node("pt", "asset", "PT-USDX", attrs={"kind": "pt"}),
+        Node("usdx", "asset", "USDX", attrs={"kind": "synthetic_stable"}),
+        Node("issuer", "issuer", "USDX Labs", risk_factors={"issuer_tier": "unknown"}),
+        Node("amm", "amm", "Pendle market PT-USDX", attrs={"liquidity_usd": 5e6}),
+        Node("proto", "protocol", "Pendle V2", risk_factors={"audited_major": True}),
+        Node("chain", "chain", "Ethereum", attrs={"chain_class": "ethereum"}, risk_factors={"chain_class": "ethereum"}),
+    ], [
+        ("pt", "usdx", "backed_by"), ("usdx", "issuer", "issued_by"),
+        ("pt", "amm", "traded_on"), ("amm", "proto", "runs_on"), ("proto", "chain", "settles_on"),
+    ])
+
+
+def build() -> DependencyGraph:
+    """Hold the PT."""
+    return add(pt_subgraph(), [], [("position", "pt", "holds")])
+
+
+def build_market(tracks: bool = True, util: float = 0.9, lltv: float = 0.86) -> DependencyGraph:
+    """Supply USDC to a Morpho market that takes the PT as collateral."""
+    return add(pt_subgraph(), [
+        Node("market", "market", "PT-USDX/USDC", attrs={"lltv": lltv, "utilization": util, "liquidity_usd": 2e6}),
         Node("usdc", "asset", "USDC", attrs={"kind": "fiat_stable"}),
         Node("oracle", "oracle", "oracle", risk_factors={"tracks_market": tracks}),
-        Node("proto", "protocol", "Morpho Blue", risk_factors={"immutable_core": True}),
-        Node("chain", "chain", "Ethereum", attrs={"chain_class": "ethereum"}, risk_factors={"chain_class": "ethereum"}),
-    ]:
-        g.add_node(n)
-    g.root = "position"
-    for u, v, t, w in [
-        ("position", "vault", "deposits_in", 1), ("vault", "market", "allocates_to", weight), ("vault", "usdc", "denominated_in", 1),
-        ("market", "coll", "collateral_in", 1), ("market", "oracle", "priced_by", 1), ("market", "usdc", "lends", 1),
-        ("market", "proto", "runs_on", 1), ("vault", "proto", "runs_on", 1), ("proto", "chain", "settles_on", 1),
-    ]:
-        g.add_edge(Edge(u, v, t, weight=w))
-    return g
+        Node("morpho", "protocol", "Morpho Blue", risk_factors={"immutable_core": True}),
+    ], [
+        ("position", "market", "deposits_in"), ("position", "usdc", "denominated_in"),
+        ("market", "pt", "collateral_in"), ("market", "oracle", "priced_by"), ("market", "usdc", "lends"),
+        ("market", "morpho", "runs_on"), ("morpho", "chain", "settles_on"),
+    ])
 
 
 def test_brief_examples():
@@ -48,33 +70,52 @@ def test_break_even_table_matches_readme():
     assert table[0.10] is None
 
 
-def test_small_depeg_inside_lltv_buffer_causes_no_lender_loss():
-    sim = Simulator(build(tracks=True), seed=1).run("coll", "depeg", n=2000, fixed_severity=0.03)
+def test_underlying_depeg_passes_straight_through_to_pt():
+    sim = Simulator(build(), seed=4).run("usdx", "depeg", n=3000, fixed_severity=0.12)
+    assert abs(sim.loss["position"].mean() - 0.12) < 0.02
+
+
+def test_issuer_default_reaches_position_through_underlying():
+    sim = Simulator(build(), seed=5).run("issuer", "issuer_default", n=3000, fixed_severity=0.4)
+    assert abs(sim.loss["position"].mean() - 0.4) < 0.03
+
+
+def test_amm_liquidity_drain_hits_pt():
+    sim = Simulator(build(), seed=6).run("amm", "liquidity_drain", n=3000, fixed_severity=0.2)
+    assert abs(sim.loss["pt"].mean() - 0.2) < 0.02 and sim.loss["usdx"].mean() == 0
+
+
+def test_chain_halt_causes_small_price_drift_only():
+    sim = Simulator(build(), seed=7).run("chain", "chain_halt", n=4000, fixed_severity=24)
+    assert 0 < sim.loss["position"].mean() < 0.01
+
+
+def test_pt_cannot_be_unbacked_minted():
+    modes = {m.id for m in applicable_modes("asset", {"kind": "pt"})}
+    assert "depeg" in modes and "unbacked_mint" not in modes
+
+
+def test_small_pt_depeg_inside_lltv_buffer_causes_no_lender_loss():
+    sim = Simulator(build_market(tracks=True), seed=1).run("usdx", "depeg", n=2000, fixed_severity=0.03)
     assert sim.loss["market"].mean() < 0.005
 
 
-def test_blind_oracle_turns_depeg_into_bad_debt():
-    seen = Simulator(build(tracks=True), seed=1).run("coll", "depeg", n=4000, fixed_severity=0.4).loss["position"].mean()
-    blind = Simulator(build(tracks=False), seed=1).run("coll", "depeg", n=4000, fixed_severity=0.4).loss["position"].mean()
+def test_blind_oracle_turns_pt_depeg_into_bad_debt():
+    seen = Simulator(build_market(tracks=True), seed=1).run("usdx", "depeg", n=4000, fixed_severity=0.4).loss["position"].mean()
+    blind = Simulator(build_market(tracks=False), seed=1).run("usdx", "depeg", n=4000, fixed_severity=0.4).loss["position"].mean()
     assert blind > seen > 0
 
 
 def test_oracle_overpricing_drains_idle_liquidity_only():
     # Over-borrowing pays only once LLTV x (1 + error) > 1, i.e. error > 16% at LLTV 86%.
-    small = Simulator(build(util=0.5), seed=2).run("oracle", "oracle_wrong_price", n=4000, fixed_severity=0.10).loss["market"]
-    big = Simulator(build(util=0.5), seed=2).run("oracle", "oracle_wrong_price", n=4000, fixed_severity=1.0).loss["market"]
+    small = Simulator(build_market(util=0.5), seed=2).run("oracle", "oracle_wrong_price", n=4000, fixed_severity=0.10).loss["market"]
+    big = Simulator(build_market(util=0.5), seed=2).run("oracle", "oracle_wrong_price", n=4000, fixed_severity=1.0).loss["market"]
     assert small.mean() < 0.01
     assert 0.1 < big.mean() and big.max() <= 0.5 + 1e-9  # never more than the idle 50% of supply
 
 
-def test_vault_loss_scales_with_allocation_weight():
-    full = Simulator(build(weight=1.0), seed=3).run("coll", "unbacked_mint", n=3000).loss["vault"].mean()
-    tenth = Simulator(build(weight=0.1), seed=3).run("coll", "unbacked_mint", n=3000).loss["vault"].mean()
-    assert abs(tenth - 0.1 * full) < 0.02
-
-
-def test_loan_asset_depeg_passes_straight_through():
-    sim = Simulator(build(), seed=4).run("usdc", "depeg", n=3000, fixed_severity=0.12)
+def test_loan_asset_depeg_passes_straight_through_to_lender():
+    sim = Simulator(build_market(), seed=4).run("usdc", "depeg", n=3000, fixed_severity=0.12)
     assert abs(sim.loss["position"].mean() - 0.12) < 0.02
 
 

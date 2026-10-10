@@ -22,33 +22,36 @@ from .propagation import Simulator, explain_paths, histogram, summarize
 INCIDENTS = json.loads((Path(__file__).parent / "data" / "incidents.json").read_text(encoding="utf-8"))["incidents"]
 
 PRESETS = [
-    {"id": "belem-eurcv", "label": "Belem RWA EURCV (RockawayX-curated)", "kind": "vault", "chain_id": 1,
-     "address": "0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec", "size_usd": 1_000_000,
-     "note": "Belem's EURCV vault on Morpho V2: lends SG-FORGE EURCV against mGLOeuro, WBTC, cbBTC, wstETH"},
-    {"id": "rx-usdc-yield", "label": "RockawayX USDC Yield", "kind": "vault", "chain_id": 1,
-     "address": "0xE0181090c22579B6A217f1522cbf8c9f1F0C1965", "size_usd": 1_000_000,
-     "note": "USDC lent against Pendle PTs (PT-reUSD, PT-strUSD), strUSD, siUSD, PRIME"},
-    {"id": "rx-fx", "label": "RockawayX f(x) Protocol Ecosystem USDC", "kind": "vault", "chain_id": 1,
-     "address": "0x2cA22cb25558fa2018ecb1CE4eD8AF92Ee7ea423", "size_usd": 1_000_000,
-     "note": "USDC lent against fxSAVE and PT-fxSAVE"},
-    {"id": "rx-tori", "label": "RockawayX Tori Ecosystem", "kind": "vault", "chain_id": 1,
-     "address": "0x3BD9AdAE6643dDcddD02746b8B60075E56DF9478", "size_usd": 1_000_000,
-     "note": "USDC lent against strUSD, etrUSD and PT-trUSD"},
-    {"id": "rx-rwa", "label": "RockawayX Confidential RWA USDC", "kind": "vault", "chain_id": 1,
-     "address": "0xc207d3f66537D7F66456808379A0E560cF20Da36", "size_usd": 1_000_000,
-     "note": "USDC lent against PST, PT-reUSD and AUTO"},
-    {"id": "rx-midas-base", "label": "RockawayX Midas USDC Prime (Base)", "kind": "vault", "chain_id": 8453,
-     "address": "0xAE4181CFB5aaA08bbE77d269c6B595672b9F9Edc", "size_usd": 250_000,
-     "note": "On Base: bridged WETH, cbBTC, cbETH collateral; L2 settling to Ethereum"},
-    {"id": "pt-reusd-market", "label": "Brief example: PT-reUSD as collateral (market supply)", "kind": "market", "chain_id": 1,
+    {"id": "pt-reusd-market", "label": "Brief example: PT-reUSD as collateral (USDC supply)", "kind": "market", "chain_id": 1,
      "address": "0x1e9d614631a7df0ec07fb05b2c8cb2491575fd1a63a33bf187a6afb295a4fc64", "size_usd": 1_000_000,
      "note": "The 5-layer Pendle PT example from the brief: chain, yield source, oracle, PT AMM, lending market"},
+    {"id": "pt-usd3-market", "label": "PT-USD3 as collateral (USDC supply)", "kind": "market", "chain_id": 1,
+     "address": "0xf8c5aa31ea6b2a068a9eddb46dd110cae57bf0f12be9583a3f9a818effecba89", "size_usd": 1_000_000,
+     "note": "LLTV 86%, utilization above 90%: idle liquidity runs thin once lenders rush out"},
+    {"id": "pt-susde-market", "label": "PT-sUSDe as collateral (USDC supply)", "kind": "market", "chain_id": 1,
+     "address": "0x5613b170ded221c588b6e9637b910f49e5508680ceede207f44aa72e5c46cb05", "size_usd": 1_000_000,
+     "note": "Ethena PT lent against at LLTV 91.5%"},
+    {"id": "pt-reusd", "label": "PT-reUSD (held)", "kind": "token", "chain_id": 1,
+     "address": "0xecfafdc7741323a945a163ed068b5a3c43483957", "size_usd": 1_000_000,
+     "note": "The Pendle PT from the brief: Re Protocol reUSD yield source, Pendle AMM, settles on Ethereum"},
+    {"id": "pt-susde", "label": "PT-sUSDe (held)", "kind": "token", "chain_id": 1,
+     "address": "0xb195b618ea52b77cb2a58846f452f59f8dfa9390", "size_usd": 1_000_000,
+     "note": "Ethena staked USDe: delta-neutral synthetic dollar with off-exchange custody"},
+    {"id": "pt-strusd", "label": "PT-strUSD (held)", "kind": "token", "chain_id": 1,
+     "address": "0x74299580811e1c3c1a2831db079ba0a8f513998f", "size_usd": 1_000_000,
+     "note": "Collateral in RockawayX-curated Morpho vaults"},
+    {"id": "pt-fxsave", "label": "PT-fxSAVE (held)", "kind": "token", "chain_id": 1,
+     "address": "0x079c3469143804af5d0d645a878c371dbe8d038e", "size_usd": 1_000_000,
+     "note": "f(x) Protocol savings token; thin Pendle liquidity"},
+    {"id": "pt-wsteth", "label": "PT-wstETH (held)", "kind": "token", "chain_id": 1,
+     "address": "0xb253eff1104802b97ac7e3ac9fdd73aece295a2c", "size_usd": 1_000_000,
+     "note": "Lido wrapped staked ETH: blue-chip LST underlying"},
 ]
 
 
 def _clean(obj):
     if isinstance(obj, dict):
-        return {k: _clean(v) for k, v in obj.items() if k not in ("samples", "instant_samples")}
+        return {k: _clean(v) for k, v in obj.items() if k != "samples"}
     if isinstance(obj, (list, tuple)):
         return [_clean(v) for v in obj]
     if isinstance(obj, (np.floating,)):
@@ -71,7 +74,7 @@ class RiskEngine:
         pid = hashlib.sha1(f"{req.kind}{req.address.lower()}{req.chain_id}{req.size_usd}{time.time()}".encode()).hexdigest()[:12]
         rng = np.random.default_rng(self.seed)
         screening = self.screen(g, horizon_days, rng)
-        calm_exit = exit_cost(g, req.size_usd, horizon_days, rng, stressed=False)
+        calm_exit = exit_cost(g, req.size_usd, rng, stressed=False)
         self.store[pid] = {"req": req, "graph": g, "screening": screening, "horizon": horizon_days}
         graph = g.to_dict()
         for n in graph["nodes"]:
@@ -146,7 +149,7 @@ class RiskEngine:
         denom = next((e.target for e in g.out_edges(g.root) if e.type == "denominated_in"), None)
         sell = denom if denom and float(sim.loss[denom].mean()) > 1e-3 else None
         stressed = float(pos_loss.mean()) > 1e-4
-        ex = exit_cost(g, req.size_usd, horizon, rng, stressed=stressed, sell_asset_id=sell, n=n)
+        ex = exit_cost(g, req.size_usd, rng, stressed=stressed, sell_asset_id=sell, n=n)
         cost_pct = exit_cost_override if exit_cost_override is not None else ex["cost_pct"]
         if exit_cost_override is not None:
             ex["override"] = exit_cost_override
@@ -227,13 +230,12 @@ class RiskEngine:
                 if n.type == "market":
                     out.append(f"Market {n.label}: utilization {(a.get('utilization') or 0):.0%}, LLTV {(a.get('lltv') or 0):.1%}, "
                                f"idle liquidity ${(a.get('liquidity_usd') or 0):,.0f}, age {a.get('age_days')} days")
+                if n.type == "amm":
+                    out.append(f"{n.label}: liquidity ${(a.get('liquidity_usd') or 0):,.0f}, expiry {a.get('expiry')}")
                 if n.type == "mint_authority":
                     out.append(f"Mint / upgrade control of the token: {n.label} ({a.get('role') or 'role-based'})")
                 if n.type == "asset" and rf.get("unverified"):
                     out.append(f"{n.label}: issuer and backing are not in the curated registry - classified as {a.get('kind')} by heuristic")
-                if n.type == "vault" and a.get("liquidity_usd") is not None:
-                    out.append(f"Vault {n.label}: TVL ${(a.get('tvl_usd') or 0):,.0f}, instant liquidity ${(a.get('liquidity_usd') or 0):,.0f}, "
-                               f"{(a.get('exotic_share') or 0):.0%} in non-blue-chip collateral")
         return out[:8]
 
     @staticmethod
@@ -244,6 +246,8 @@ class RiskEngine:
             (f"Replay: severity fixed at the observed {fixed:g} (+/- noise)" if fixed is not None else
              f"Severity at the failing component: exponential, mean {sev_mean:g}h" if sev_kappa == 0 else
              f"Severity at the failing component: Beta(mean {sev_mean:.0%}, concentration {sev_kappa:g})"),
+            "The PT loses whatever its underlying, issuer, mint controls or AMM lose (combined as independent losses)",
+            "While the chain is halted a held PT cannot be sold; its price drifts with the volatility of its asset class",
             "Borrowers sit at 70-97% of LLTV on average; liquidators prevent 30-80% of insolvency only when the oracle sees the move",
             "Over-borrowing drains up to 100% of idle market liquidity once LLTV x oracle over-pricing > 1",
             "Probabilities: Gamma-Poisson base rates x risk-factor multipliers, then Bayesian update by the alert likelihood ratio",

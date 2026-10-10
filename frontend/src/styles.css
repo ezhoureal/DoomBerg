@@ -81,7 +81,6 @@ aside.right { border-right: none; border-left: 1px solid var(--line); }
 .err { color: #ff9aa3; margin-top: 8px; font-size: 12px; }
 
 .list { display: flex; flex-direction: column; gap: 6px; }
-.list.compact .list-item small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .list-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; }
 .list-item:hover:not(:disabled) { border-color: var(--line2); background: #131d3b; }
 .list-item > div { min-width: 0; }

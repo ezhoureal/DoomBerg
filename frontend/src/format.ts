@@ -16,8 +16,6 @@ export const CHAINS: Record<number, string> = { 1: "Ethereum", 8453: "Base", 421
 
 export const TYPE_META: Record<string, { color: string; label: string; glyph: string }> = {
   position: { color: "#e8c468", label: "Position", glyph: "◆" },
-  vault: { color: "#7c9cff", label: "Vault", glyph: "▣" },
-  curator: { color: "#b18cff", label: "Curator", glyph: "☺" },
   market: { color: "#4fd1c5", label: "Lending market", glyph: "⇄" },
   oracle: { color: "#f6ad55", label: "Oracle", glyph: "◉" },
   feed: { color: "#fbd38d", label: "Price feed", glyph: "∿" },
