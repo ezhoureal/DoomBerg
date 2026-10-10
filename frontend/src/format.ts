@@ -15,29 +15,29 @@ export const short = (a?: string | null) => (a && a.length > 14 ? `${a.slice(0, 
 export const CHAINS: Record<number, string> = { 1: "Ethereum", 8453: "Base", 42161: "Arbitrum", 10: "Optimism", 137: "Polygon", 143: "Monad" };
 
 export const TYPE_META: Record<string, { color: string; label: string; glyph: string }> = {
-  position: { color: "#e8c468", label: "Position", glyph: "◆" },
-  market: { color: "#4fd1c5", label: "Lending market", glyph: "⇄" },
-  oracle: { color: "#f6ad55", label: "Oracle", glyph: "◉" },
-  feed: { color: "#fbd38d", label: "Price feed", glyph: "∿" },
-  asset: { color: "#68d391", label: "Token", glyph: "●" },
-  amm: { color: "#f687b3", label: "AMM / PT market", glyph: "≋" },
-  issuer: { color: "#90cdf4", label: "Issuer / custodian", glyph: "⌂" },
-  mint_authority: { color: "#fc8181", label: "Who can mint", glyph: "✎" },
-  bridge: { color: "#d6bcfa", label: "Bridge", glyph: "⇆" },
-  protocol: { color: "#a0aec0", label: "Protocol code", glyph: "{}" },
-  chain: { color: "#cbd5e0", label: "Chain", glyph: "⛓" },
+  position: { color: "#75603b", label: "Position", glyph: "◆" },
+  market: { color: "#32766b", label: "Lending market", glyph: "⇄" },
+  oracle: { color: "#9a6b24", label: "Oracle", glyph: "◉" },
+  feed: { color: "#9a6b24", label: "Price feed", glyph: "∿" },
+  asset: { color: "#3d7d52", label: "Token", glyph: "●" },
+  amm: { color: "#946381", label: "AMM / PT market", glyph: "≋" },
+  issuer: { color: "#426786", label: "Issuer / custodian", glyph: "⌂" },
+  mint_authority: { color: "#a3554a", label: "Token controls", glyph: "✎" },
+  bridge: { color: "#775893", label: "Bridge", glyph: "⇆" },
+  protocol: { color: "#676e77", label: "Protocol code", glyph: "{}" },
+  chain: { color: "#676e77", label: "Chain", glyph: "⛓" },
 };
 
 export const riskColor = (share: number) => {
-  if (share >= 0.15) return "#ff5d6c";
-  if (share >= 0.06) return "#ff9f43";
-  if (share >= 0.02) return "#ffd166";
-  return "#4fd1a5";
+  if (share >= 0.15) return "#b74437";
+  if (share >= 0.06) return "#a76b24";
+  if (share >= 0.02) return "#9a752a";
+  return "#2c7760";
 };
 
 export const lossColor = (l: number) => {
-  if (l >= 0.2) return "#ff5d6c";
-  if (l >= 0.05) return "#ff9f43";
-  if (l >= 0.005) return "#ffd166";
-  return "#4fd1a5";
+  if (l >= 0.2) return "#b74437";
+  if (l >= 0.05) return "#a76b24";
+  if (l >= 0.005) return "#9a752a";
+  return "#2c7760";
 };
