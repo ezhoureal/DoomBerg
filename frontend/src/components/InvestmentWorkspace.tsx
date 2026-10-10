@@ -10,8 +10,10 @@ import {
   X,
   FlaskConical,
   FileText,
+  RefreshCw,
+  LayoutList,
 } from "lucide-react";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import type { Analysis, Catalog, ShockResult } from "../types";
 import Graph, { type ColorMode } from "./Graph";
 import PositionForm from "./PositionForm";
@@ -19,6 +21,13 @@ import TopRisks from "./TopRisks";
 import Inspector from "./Inspector";
 import Answer from "./Answer";
 import { CHAINS, pct, usd } from "../format";
+import {
+  ROLE_LABELS,
+  type PositionRole,
+  type ScenarioRecord,
+} from "../ui/workspace";
+import Freshness from "./Freshness";
+import ScenarioHistory from "./ScenarioHistory";
 
 type View = "dependencies" | "scenarios" | "results";
 export default function InvestmentWorkspace({
@@ -30,6 +39,15 @@ export default function InvestmentWorkspace({
   onAdd,
   onAnalysis,
   onBusy,
+  role,
+  refreshedAt,
+  needsRefresh,
+  history,
+  onScenario,
+  onInvalid,
+  onOverview,
+  now,
+  saveError,
 }: {
   initialAnalysis: Analysis | null;
   catalog: Catalog | null;
@@ -37,11 +55,27 @@ export default function InvestmentWorkspace({
   active: boolean;
   investmentTabs: ReactNode;
   onAdd: () => void;
-  onAnalysis: (analysis: Analysis) => void;
+  onAnalysis: (
+    analysis: Analysis,
+    role: PositionRole,
+    refreshedAt: string,
+  ) => void;
   onBusy: (busy: boolean) => void;
+  role: PositionRole;
+  refreshedAt: string;
+  needsRefresh: boolean;
+  history: ScenarioRecord[];
+  onScenario: (record: ScenarioRecord) => void;
+  onInvalid: () => void;
+  onOverview: () => void;
+  now: number;
+  saveError: string | null;
 }) {
   const [analysis, setAnalysis] = useState<Analysis | null>(initialAnalysis);
-  const [result, setResult] = useState<ShockResult | null>(null);
+  const [record, setRecord] = useState<ScenarioRecord | null>(
+    history[0] ?? null,
+  );
+  const result = record?.result ?? null;
   const [selected, setSelected] = useState<string | null>(null);
   const [preMode, setPreMode] = useState<string | null>(null);
   const [busy, setBusy] = useState<"analyze" | "shock" | null>(null);
@@ -49,9 +83,8 @@ export default function InvestmentWorkspace({
   const [colorMode, setColorMode] = useState<ColorMode>("type");
   const [view, setView] = useState<View>("dependencies");
   const [positionOpen, setPositionOpen] = useState(false);
-  const [tracedAt, setTracedAt] = useState<string | null>(() =>
-    initialAnalysis ? traceTime() : null,
-  );
+  const requestBusy = useRef(false);
+  const restoreAttempted = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     onBusy(!!busy);
@@ -63,24 +96,74 @@ export default function InvestmentWorkspace({
     if (positionOpen) dialog.current?.showModal();
     else dialog.current?.close();
   }, [positionOpen]);
-  const analyze = async (req: Parameters<typeof api.analyze>[0]) => {
+  const analyze = async (
+    req: Parameters<typeof api.analyze>[0],
+    nextRole: PositionRole = role,
+  ) => {
+    if (requestBusy.current) return;
+    requestBusy.current = true;
     setBusy("analyze");
     setError(null);
     try {
       const next = await api.analyze(req);
       setAnalysis(next);
-      onAnalysis(next);
-      setResult(null);
+      onAnalysis(next, nextRole, new Date().toISOString());
       setSelected(null);
       setPreMode(null);
       setView("dependencies");
-      setTracedAt(traceTime());
       setPositionOpen(false);
     } catch (e: any) {
       setError(e.message);
     } finally {
       setBusy(null);
+      requestBusy.current = false;
     }
+  };
+  const refresh = () =>
+    analysis &&
+    analyze({
+      ...analysis.request,
+      label: analysis.request.label ?? undefined,
+      horizon_days: analysis.screening.horizon_days,
+    });
+  useEffect(() => {
+    if (
+      active &&
+      needsRefresh &&
+      !busy &&
+      service === "API online" &&
+      !restoreAttempted.current
+    ) {
+      restoreAttempted.current = true;
+      void refresh();
+    }
+  }, [active, needsRefresh, service, busy]);
+  const remember = (r: ShockResult) => {
+    if (!analysis) return;
+    const next: ScenarioRecord = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      analysisId: analysis.position_id,
+      refreshedAt,
+      request: { ...analysis.request },
+      horizonDays: r.probability.horizon_days,
+      result: r,
+    };
+    setRecord(next);
+    onScenario(next);
+    setView("results");
+  };
+  const reportError = (e: unknown) => {
+    if (
+      e instanceof ApiError &&
+      e.status === 404 &&
+      e.message.includes("position_id")
+    ) {
+      onInvalid();
+      setError(
+        "The backend analysis expired. Refresh this investment before running a new scenario.",
+      );
+    } else setError(e instanceof Error ? e.message : "Request failed.");
   };
   const shock = async (r: {
     node_id: string;
@@ -89,23 +172,25 @@ export default function InvestmentWorkspace({
     probability_override: number | null;
     exit_cost_override: number | null;
   }) => {
-    if (!analysis) return;
+    if (!analysis || needsRefresh || requestBusy.current) return;
+    requestBusy.current = true;
     setBusy("shock");
     setError(null);
     try {
-      setResult(await api.shock({ position_id: analysis.position_id, ...r }));
-      setView("results");
+      remember(await api.shock({ position_id: analysis.position_id, ...r }));
     } catch (e: any) {
-      setError(e.message);
+      reportError(e);
     } finally {
       setBusy(null);
+      requestBusy.current = false;
     }
   };
   const replay = async (
     incident_id: string,
     exit_cost_override: number | null,
   ) => {
-    if (!analysis) return;
+    if (!analysis || needsRefresh || requestBusy.current) return;
+    requestBusy.current = true;
     setBusy("shock");
     setError(null);
     try {
@@ -114,19 +199,27 @@ export default function InvestmentWorkspace({
         incident_id,
         exit_cost_override,
       });
-      setResult(r);
+      remember(r);
       setSelected(r.shock.node_id);
-      setView("results");
     } catch (e: any) {
-      setError(e.message);
+      reportError(e);
     } finally {
       setBusy(null);
+      requestBusy.current = false;
     }
   };
   const pt = analysis?.graph.nodes.find(
     (n) => n.type === "asset" && n.attrs.kind === "pt",
   );
   const market = analysis?.graph.nodes.find((n) => n.type === "market");
+  const graphResult =
+    record?.analysisId === analysis?.position_id && !needsRefresh
+      ? result
+      : null;
+  const navigate = (next: View) => {
+    if (next === "results" && !record) setRecord(history[0] ?? null);
+    setView(next);
+  };
   const choose = (id: string | null) => {
     setSelected(id);
     setPreMode(null);
@@ -152,8 +245,8 @@ export default function InvestmentWorkspace({
             <button
               key={t.id}
               className={`nav-item ${view === t.id ? "active" : ""}`}
-              disabled={t.id === "results" && !result}
-              onClick={() => setView(t.id)}
+              disabled={t.id === "results" && !result && !history.length}
+              onClick={() => navigate(t.id)}
             >
               <t.icon size={16} />
               {t.label}
@@ -178,11 +271,22 @@ export default function InvestmentWorkspace({
             />
           </div>
         )}
+        {analysis && (
+          <button className="nav-item overview-link" onClick={onOverview}>
+            <LayoutList size={16} />
+            Investment overview
+          </button>
+        )}
         {investmentTabs}
         <div className="nav-footer">
           <Shield size={15} />
           <span>
-            Belem Capital<small>Investment risk research</small>
+            Belem Capital
+            <small>
+              {saveError
+                ? "Workspace not saved"
+                : "Workspace saved in this browser"}
+            </small>
           </span>
         </div>
       </aside>
@@ -193,11 +297,19 @@ export default function InvestmentWorkspace({
             <ChevronRight size={13} />{" "}
             <b>{tabs.find((t) => t.id === view)?.label}</b>
           </span>
-          <span className={`service-state ${service.toLowerCase()}`}>
+          <span
+            title="API connectivity only; this does not indicate oracle health or live monitoring."
+            className={`service-state ${service === "API online" ? "connected" : "offline"}`}
+          >
             <i />
             {service}
           </span>
         </header>
+        {saveError && (
+          <div className="error-banner" role="status">
+            {saveError}
+          </div>
+        )}
         {error && !positionOpen && (
           <div className="error-banner" role="alert">
             {error}
@@ -256,24 +368,47 @@ export default function InvestmentWorkspace({
                 <span className="heading-meta">
                   {analysis.screening.horizon_days}-day horizon
                   {pt?.attrs.expiry ? ` · Matures ${pt.attrs.expiry}` : ""} ·
-                  Traced {tracedAt}
+                  Last refreshed {new Date(refreshedAt).toLocaleString()}
                 </span>
+                <div className="snapshot-meta">
+                  <span className="position-role">
+                    {ROLE_LABELS[role]} · user-entered size
+                  </span>
+                  <Freshness
+                    refreshedAt={refreshedAt}
+                    needsRefresh={needsRefresh}
+                    now={now}
+                  />
+                </div>
               </div>
-              <button
-                className="btn subtle"
-                onClick={() => setPositionOpen(true)}
-                disabled={!!busy}
-              >
-                Change investment
-              </button>
+              <div className="heading-actions">
+                <button
+                  className="btn subtle"
+                  onClick={() => void refresh()}
+                  disabled={!!busy}
+                >
+                  <RefreshCw
+                    size={14}
+                    className={busy === "analyze" ? "spin" : ""}
+                  />
+                  {busy === "analyze" ? "Refreshing…" : "Refresh investment"}
+                </button>
+                <button
+                  className="btn subtle"
+                  onClick={() => setPositionOpen(true)}
+                  disabled={!!busy}
+                >
+                  Change investment
+                </button>
+              </div>
             </div>
             <section className="summary-strip" aria-label="Investment summary">
               <div>
-                <small>Position value</small>
+                <small>Entered position size</small>
                 <b>{usd(analysis.request.size_usd)}</b>
               </div>
               <div>
-                <small>Withdrawable now</small>
+                <small>Withdrawable at snapshot</small>
                 <b>{pct(analysis.exit_now.instant_fraction, 0)}</b>
               </div>
               <div>
@@ -304,34 +439,49 @@ export default function InvestmentWorkspace({
                 }}
               />
             </details>
-            <div
-              className="workspace-tabs"
-              role="tablist"
-              aria-label="Analysis views"
-            >
-              {tabs.map((t) => (
-                <button
-                  role="tab"
-                  aria-selected={view === t.id}
-                  key={t.id}
-                  disabled={t.id === "results" && !result}
-                  className={view === t.id ? "active" : ""}
-                  onClick={() => setView(t.id)}
-                >
-                  <t.icon size={15} />
-                  {t.label}
-                </button>
-              ))}
-            </div>
+            {needsRefresh && (
+              <div className="snapshot-notice" role="status">
+                Saved snapshot.{" "}
+                {busy === "analyze"
+                  ? "Fetching a fresh analysis…"
+                  : "Refresh required before running new scenarios."}
+              </div>
+            )}
             {view === "results" && result ? (
-              <Answer
-                r={result}
-                onClose={() => {
-                  setResult(null);
-                  setView("dependencies");
-                }}
-                onInspectPath={() => setView("scenarios")}
-              />
+              <>
+                <ScenarioHistory
+                  history={history}
+                  selectedId={record?.id ?? null}
+                  analysisId={analysis.position_id}
+                  onSelect={(saved) => {
+                    setRecord(saved);
+                    setSelected(
+                      analysis.graph.nodes.some(
+                        (n) => n.id === saved.result.shock.node_id,
+                      )
+                        ? saved.result.shock.node_id
+                        : null,
+                    );
+                  }}
+                />
+                <div className="result-snapshot-note">
+                  Saved scenario ·{" "}
+                  {new Date(record!.createdAt).toLocaleString()} · Analysis
+                  snapshot {new Date(record!.refreshedAt).toLocaleString()}
+                  {record?.analysisId !== analysis.position_id || needsRefresh
+                    ? " · Earlier snapshot; not a current recommendation"
+                    : ""}
+                </div>
+                <Answer
+                  r={result}
+                  onClose={() => {
+                    setRecord(null);
+                    setView("dependencies");
+                  }}
+                  onInspectPath={() => setView("scenarios")}
+                  canInspectPath={!!graphResult}
+                />
+              </>
             ) : (
               <div
                 className={`research-area ${selected || view === "scenarios" ? "with-inspector" : ""}`}
@@ -363,7 +513,7 @@ export default function InvestmentWorkspace({
                   </div>
                   <Graph
                     analysis={analysis}
-                    result={result}
+                    result={graphResult}
                     selected={selected}
                     onSelect={choose}
                     colorMode={colorMode}
@@ -400,6 +550,7 @@ export default function InvestmentWorkspace({
                     selected={selected}
                     preMode={preMode}
                     busy={busy === "shock"}
+                    blocked={needsRefresh || busy === "analyze"}
                     onShock={shock}
                     onReplay={replay}
                     scenarioView={view === "scenarios"}
@@ -461,6 +612,8 @@ export default function InvestmentWorkspace({
         )}
         <PositionForm
           onAnalyze={analyze}
+          initialRole={role}
+          key={analysis?.position_id ?? "empty"}
           busy={busy === "analyze"}
           initial={
             analysis
@@ -475,11 +628,4 @@ export default function InvestmentWorkspace({
       </dialog>
     </div>
   );
-}
-
-function traceTime() {
-  return new Date().toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }

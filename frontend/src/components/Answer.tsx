@@ -12,6 +12,7 @@ import {
 import { ArrowRight, GitBranch, X } from "lucide-react";
 import type { ShockResult } from "../types";
 import { TYPE_META, lossColor, pct, usd } from "../format";
+import { exitAmounts } from "../ui/workspace";
 
 type ResultTab = "summary" | "distribution" | "exit" | "assumptions";
 function Gauge({
@@ -61,10 +62,12 @@ export default function Answer({
   r,
   onClose,
   onInspectPath,
+  canInspectPath = true,
 }: {
   r: ShockResult;
   onClose: () => void;
   onInspectPath: () => void;
+  canInspectPath?: boolean;
 }) {
   const [tab, setTab] = useState<ResultTab>("summary");
   const d = r.decision,
@@ -74,6 +77,7 @@ export default function Answer({
     share: b.share,
   }));
   const path = r.paths[0]?.hops ?? [];
+  const amounts = exitAmounts(r);
   return (
     <section className="answer">
       <div className="result-heading">
@@ -123,7 +127,7 @@ export default function Answer({
             </em>
           </div>
           <div className="m">
-            <small>Withdrawable now</small>
+            <small>Withdrawable in scenario</small>
             <b>{pct(r.exit.instant_fraction, 0)}</b>
             <em>Under this scenario</em>
           </div>
@@ -134,6 +138,31 @@ export default function Answer({
           </div>
         </div>
       </div>
+      <div className="execution-summary">
+        <div>
+          <small>Immediately withdrawable</small>
+          <b>{usd(amounts.withdrawable)}</b>
+        </div>
+        <div>
+          <small>Remaining exposure after immediate exit</small>
+          <b>{usd(amounts.remaining)}</b>
+        </div>
+        <div>
+          <small>Estimated cost for modeled exit route</small>
+          <b>
+            {r.exit.override !== undefined
+              ? `${usd(d.exit_cost_usd)} · override`
+              : `${usd(r.exit.cost_pct_ci[0] * r.position.size_usd)} – ${usd(r.exit.cost_pct_ci[1] * r.position.size_usd)}`}
+          </b>
+        </div>
+      </div>
+      {exit && amounts.remaining > 0 && (
+        <p className="execution-note">
+          Only a partial immediate exit is available in this scenario. The
+          remaining {usd(amounts.remaining)} stays exposed; review the exit plan
+          for constraints.
+        </p>
+      )}
       <div className="result-tabs" role="tablist" aria-label="Result details">
         {(
           [
@@ -178,7 +207,16 @@ export default function Answer({
                 </div>
               ))}
             </div>
-            <button className="text-button" onClick={onInspectPath}>
+            <button
+              className="text-button"
+              disabled={!canInspectPath}
+              title={
+                !canInspectPath
+                  ? "This result belongs to an earlier analysis snapshot."
+                  : undefined
+              }
+              onClick={onInspectPath}
+            >
               <GitBranch size={14} />
               Inspect in graph <ArrowRight size={13} />
             </button>
@@ -229,11 +267,19 @@ export default function Answer({
               <em>{pct(d.loss_given_failure.bad_case)} of position</em>
             </div>
           </div>
-          <Gauge
-            p={d.probability}
-            ci={r.probability.p_ci}
-            be={d.break_even_probability}
-          />
+          {d.probability_source === "override" ? (
+            <p className="execution-note">
+              The decision uses your fixed probability override of{" "}
+              {pct(d.probability)}. The original model range is{" "}
+              {pct(r.probability.p_ci[0])} – {pct(r.probability.p_ci[1])}.
+            </p>
+          ) : (
+            <Gauge
+              p={d.probability}
+              ci={r.probability.p_ci}
+              be={d.break_even_probability}
+            />
+          )}
           <div className="card">
             <div className="card-h">Loss distribution if failure occurs</div>
             <div className="loss-chart">
@@ -343,9 +389,9 @@ export default function Answer({
               {pct(d.exit_cost_pct, 2)} exit cost
             </p>
             <p>
-              {pct(d.confidence, 0)} of probability draws produce this
-              recommendation. This measures agreement within the model, not the
-              chance the recommendation is correct.
+              {d.probability_source === "override"
+                ? "This recommendation uses a fixed user-supplied probability. It does not provide a calibrated confidence in the decision."
+                : `${pct(d.confidence, 0)} of probability draws produce this recommendation. This measures agreement within the model, not the chance the recommendation is correct.`}
             </p>
             <div className="card-h">Probability assumptions</div>
             <ul className="assume">

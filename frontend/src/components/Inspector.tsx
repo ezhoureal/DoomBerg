@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Zap, History, ExternalLink, Loader2 } from "lucide-react";
 import type { Analysis, Catalog } from "../types";
 import { TYPE_META, pct, short, usd } from "../format";
+import EvidenceBadge from "./EvidenceBadge";
+import { evidenceSource, evidenceSummary } from "../ui/workspace";
 
 type ShockReq = {
   node_id: string;
@@ -29,7 +31,10 @@ const SHOW_ATTRS: Record<string, [string, (v: any) => string][]> = {
   ],
   feed: [
     ["answer", (v) => (v ?? "n/a").toLocaleString()],
-    ["age_s", (v) => (v ? `${Math.round(v / 60)} min` : "n/a")],
+    [
+      "age_s",
+      (v) => (v != null ? `${Math.round(v / 60)} min at snapshot` : "n/a"),
+    ],
     ["stale", (v) => (v ? "YES" : "no")],
     ["nav_feed", (v) => (v ? "issuer NAV" : "market")],
   ],
@@ -80,6 +85,7 @@ export default function Inspector({
   selected,
   preMode,
   busy,
+  blocked = false,
   onShock,
   onReplay,
   scenarioView,
@@ -90,6 +96,7 @@ export default function Inspector({
   selected: string | null;
   preMode: string | null;
   busy: boolean;
+  blocked?: boolean;
   onShock: (r: ShockReq) => void;
   onReplay: (incident: string, exitOverride: number | null) => void;
   scenarioView: boolean;
@@ -122,6 +129,11 @@ export default function Inspector({
 
   return (
     <div className="panel-section">
+      {blocked && (
+        <div className="hint">
+          Refresh this investment before running a new scenario.
+        </div>
+      )}
       {!node && (
         <div className="hint">
           Select a graph component or a modeled risk contributor.
@@ -134,6 +146,7 @@ export default function Inspector({
               {meta.glyph} {meta.label}
             </div>
             <div className="insp-label">{node.label}</div>
+            <EvidenceBadge node={node} />
             {node.address && (
               <a
                 className="addr"
@@ -171,7 +184,7 @@ export default function Inspector({
                 ))}
               {node.risk && (
                 <div>
-                  <span>modeled risk contribution</span>
+                  <span>share of modeled risk</span>
                   <b>{pct(node.risk.share)}</b>
                 </div>
               )}
@@ -265,7 +278,7 @@ export default function Inspector({
                 </details>
                 <button
                   className="btn primary"
-                  disabled={busy || !mode}
+                  disabled={busy || blocked || !mode}
                   onClick={() =>
                     mode &&
                     onShock({
@@ -294,9 +307,12 @@ export default function Inspector({
 
           <details className="evidence">
             <summary>Evidence ({evidence.length})</summary>
+            <p className="hint small">{evidenceSummary(node)}</p>
             {evidence.map((e, i) => (
               <div key={i} className="ev">
-                <span className={`src src-${e.source}`}>{e.source}</span>
+                <span className={`src src-${e.source}`}>
+                  {evidenceSource(e)}
+                </span>
                 <div>
                   {e.detail}
                   {e.block ? <small> · block {e.block}</small> : null}
@@ -334,7 +350,7 @@ export default function Inspector({
             </select>
             <button
               className="btn"
-              disabled={!incident || busy}
+              disabled={!incident || busy || blocked}
               onClick={() => onReplay(incident, useC ? cOver : null)}
             >
               <History size={15} /> Replay

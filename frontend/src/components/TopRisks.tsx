@@ -17,6 +17,9 @@ export default function TopRisks({
       <div className="sub-h" style={{ marginTop: 0 }}>
         Modeled risk contributors
       </div>
+      <div className="risk-share-note">
+        Share of modeled risk · not failure probability
+      </div>
       <details className="risk-baseline">
         <summary>Baseline estimates</summary>
         <div className="kpis">

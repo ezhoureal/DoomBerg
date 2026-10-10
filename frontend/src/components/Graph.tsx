@@ -18,6 +18,8 @@ import dagre from "@dagrejs/dagre";
 import "@xyflow/react/dist/style.css";
 import type { Analysis, GNode, ShockResult } from "../types";
 import { TYPE_META, lossColor, pct, riskColor } from "../format";
+import EvidenceBadge from "./EvidenceBadge";
+import { relationLabel, topologyKey } from "../ui/workspace";
 import {
   graphView,
   GROUPS,
@@ -26,7 +28,7 @@ import {
 } from "../ui/graphView";
 export type ColorMode = "risk" | "type";
 const W = 260,
-  H = 86;
+  H = 104;
 type DepData = {
   n: GNode;
   colorMode: ColorMode;
@@ -72,6 +74,7 @@ const DepNode = memo(({ data }: NodeProps<Node<DepData>>) => {
         {n.type === "group" && (
           <div className="dep-sub">{n.attrs.subtitle}</div>
         )}
+        {n.type !== "group" && <EvidenceBadge node={n} />}
       </div>
       <div
         className="dep-badge"
@@ -135,10 +138,15 @@ function Inner({
   const [all, setAll] = useState(false);
   const [expanded, setExpanded] = useState<Set<GroupKey>>(new Set());
   const [pathOnly, setPathOnly] = useState(false);
+  const [labels, setLabels] = useState(false);
+  const [dragged, setDragged] = useState<
+    Record<string, { x: number; y: number }>
+  >({});
   useEffect(() => {
     setExpanded(new Set());
     setAll(false);
     setPathOnly(false);
+    setDragged({});
   }, [analysis.position_id]);
   const pathNodes = useMemo(
     () =>
@@ -171,11 +179,19 @@ function Inner({
       };
     return v;
   }, [analysis, expanded, all, selected, result, pathNodes, pathOnly]);
-  const positions = useMemo(() => layout(view), [view]);
+  const shape = topologyKey(view);
+  const positions = useMemo(() => layout(view), [shape]);
+  const neighbours = new Set(selected ? [selected] : []);
+  view.edges.forEach((e) => {
+    if (e.source === selected || e.target === selected) {
+      neighbours.add(e.source);
+      neighbours.add(e.target);
+    }
+  });
   const nodes: Node<DepData>[] = view.nodes.map((n) => ({
     id: n.id,
     type: "dep",
-    position: positions[n.id],
+    position: dragged[n.id] ?? positions[n.id],
     // Use the same box dimensions for React Flow and Dagre. Selection only
     // changes the highlight, so it cannot enlarge a card into its neighbour.
     style: { width: W, height: H },
@@ -189,32 +205,42 @@ function Inner({
       isShock: result?.shock.node_id === n.id,
       selected: selected === n.id,
       dim:
-        !!result &&
-        n.type !== "group" &&
-        !pathNodes.has(n.id) &&
-        (result.node_losses[n.id] ?? 0) < 0.0001,
+        (!!selected && !neighbours.has(n.id) && !pathNodes.has(n.id)) ||
+        (!!result &&
+          n.type !== "group" &&
+          !pathNodes.has(n.id) &&
+          (result.node_losses[n.id] ?? 0) < 0.0001),
     },
   }));
   const edges: Edge[] = view.edges.map((e) => {
     const hot = pathEdges.has(`${e.source}>${e.target}`);
+    const connected = e.source === selected || e.target === selected;
+    const color = hot ? "#b45345" : connected ? "#4e645d" : "#8b8780";
     return {
       id: e.id,
       source: e.source,
       target: e.target,
+      type: "smoothstep",
       animated: hot,
-      label: hot ? e.type.replace(/_/g, " ") : undefined,
-      labelStyle: { fill: "#9c342b", fontSize: 10 },
+      label: hot || connected || labels ? relationLabel(e.type) : undefined,
+      labelStyle: {
+        fill: hot ? "#9c342b" : "#4a4843",
+        fontSize: 11,
+        fontWeight: 500,
+      },
       labelBgStyle: { fill: "#fff", fillOpacity: 0.95 },
       labelBgPadding: [4, 2],
       style: {
-        stroke: hot ? "#b45345" : "#c9c5bd",
-        strokeWidth: hot ? 2 : 1.2,
+        stroke: color,
+        strokeWidth: hot || connected ? 2.4 : 1.8,
+        opacity: selected && !connected && !hot ? 0.3 : 1,
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        width: 14,
-        height: 14,
-        color: hot ? "#b45345" : "#c9c5bd",
+        width: 20,
+        height: 20,
+        markerUnits: "userSpaceOnUse",
+        color,
       },
     };
   });
@@ -229,7 +255,10 @@ function Inner({
       return;
     const t = setTimeout(() => {
       rf.fitView({ padding: 0.15, duration: 250 });
-      fitted.current = { positionId: analysis.position_id, request: fitRequest };
+      fitted.current = {
+        positionId: analysis.position_id,
+        request: fitRequest,
+      };
     }, 80);
     return () => clearTimeout(t);
   }, [analysis.position_id, fitRequest, rf, active]);
@@ -265,11 +294,19 @@ function Inner({
           </button>
         )}
         <button
+          className={`tool-button ${labels ? "on" : ""}`}
+          aria-pressed={labels}
+          onClick={() => setLabels(!labels)}
+        >
+          Connection labels
+        </button>
+        <button
           className="tool-button"
           onClick={() => {
             setExpanded(new Set());
             setAll(false);
             setPathOnly(false);
+            setDragged({});
             setFitRequest((request) => request + 1);
           }}
           title="Collapse groups"
@@ -296,6 +333,9 @@ function Inner({
             else onSelect(n.id);
           }}
           onPaneClick={() => onSelect(null)}
+          onNodeDragStop={(_, n) =>
+            setDragged((old) => ({ ...old, [n.id]: n.position }))
+          }
           minZoom={0.15}
           maxZoom={1.8}
           nodesDraggable
@@ -313,7 +353,7 @@ function Inner({
       <div className="graph-footer">
         <span>
           {view.nodes.length} visible / {analysis.stats.nodes} total · Arrows
-          mean “depends on”
+          mean “depends on” · Select a component to highlight connections
         </span>
         <details>
           <summary>Categories</summary>

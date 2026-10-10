@@ -608,6 +608,237 @@ p {
   min-width: 0;
   flex: 1;
 }
+.snapshot-meta,
+.heading-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.snapshot-meta {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.heading-actions {
+  justify-content: flex-end;
+}
+.freshness,
+.position-role,
+.snapshot-tag,
+.decision-tag,
+.evidence-badge {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 10px;
+  line-height: 14px;
+  background: #f3f1ec;
+  color: #625e55;
+}
+.freshness.needs-refresh,
+.snapshot-tag,
+.evidence-unknown {
+  color: #886325;
+  background: #fbf1dd;
+}
+.evidence-inferred {
+  color: #786549;
+  background: #f5efe4;
+}
+.evidence-sourced {
+  color: #3f6658;
+  background: #eef4f0;
+}
+.dep-body .evidence-badge {
+  margin-top: 5px;
+  font-size: 8px;
+  line-height: 11px;
+  padding: 1px 4px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+.insp-head .evidence-badge {
+  margin: 7px 0;
+}
+.risk-share-note {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+.nav-risk {
+  max-height: 36vh;
+  overflow-y: auto;
+}
+.overview-link {
+  margin-top: 10px;
+}
+.snapshot-notice,
+.result-snapshot-note {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: #f7f5ef;
+  margin: 12px 0;
+}
+.position-dialog.overview-dialog {
+  width: min(1120px, calc(100vw - 40px));
+  max-width: calc(100vw - 40px);
+}
+.overview-content {
+  padding: 0 24px 18px;
+}
+.overview-note,
+.history-note,
+.execution-note {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 10px 0;
+}
+.table-scroll {
+  overflow-x: auto;
+  max-height: 360px;
+}
+.workspace-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.workspace-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  background: #faf9f6;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  white-space: nowrap;
+}
+.workspace-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  min-width: 105px;
+}
+.workspace-table td:first-child {
+  min-width: 190px;
+  max-width: 300px;
+}
+.workspace-table small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  margin-top: 3px;
+}
+.workspace-table .current-row {
+  background: #f2f5f1;
+}
+.history-pick {
+  border: 0;
+  background: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.history-pick:hover {
+  text-decoration: underline;
+}
+.decision-tag.exit {
+  color: #a23c2f;
+  background: #fff0eb;
+}
+.decision-tag.stay {
+  color: #396b58;
+  background: #edf4ee;
+}
+.scenario-history {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 18px 30px 12px;
+  overflow: hidden;
+}
+.scenario-history > summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.scenario-history > summary span {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+.history-note {
+  padding: 0 14px;
+}
+.snapshot-notice,
+.result-snapshot-note {
+  margin-left: 30px;
+  margin-right: 30px;
+}
+.execution-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+.execution-summary > div {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 12px;
+}
+.execution-summary small {
+  display: block;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.execution-summary b {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+  .heading-actions {
+    justify-content: flex-start;
+  }
+  .execution-summary {
+    grid-template-columns: 1fr;
+  }
+  .overview-content {
+    padding: 0 12px 12px;
+  }
+}
+@media (max-width: 650px) {
+  .page-heading {
+    flex-wrap: wrap;
+  }
+  .scenario-history,
+  .snapshot-notice,
+  .result-snapshot-note {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+}
 .dep-type {
   font-size: 9px;
   line-height: 12px;

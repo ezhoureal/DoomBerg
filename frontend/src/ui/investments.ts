@@ -1,12 +1,39 @@
 import type { Analysis } from "../types.ts";
+import {
+  HISTORY_LIMIT,
+  type PositionRole,
+  type ScenarioRecord,
+} from "./workspace.ts";
 
-export type Investment = { id: string; analysis: Analysis; busy: boolean };
+export type Investment = {
+  id: string;
+  analysis: Analysis;
+  busy: boolean;
+  role: PositionRole;
+  refreshedAt: string;
+  needsRefresh: boolean;
+  history: ScenarioRecord[];
+};
 export type InvestmentsState = { items: Investment[]; activeId: string | null };
 export type InvestmentsAction =
-  | { type: "open"; id: string; analysis: Analysis }
+  | {
+      type: "open";
+      id: string;
+      analysis: Analysis;
+      role?: PositionRole;
+      refreshedAt?: string;
+    }
   | { type: "select"; id: string }
   | { type: "close"; id: string }
-  | { type: "analysis"; id: string; analysis: Analysis }
+  | {
+      type: "analysis";
+      id: string;
+      analysis: Analysis;
+      role?: PositionRole;
+      refreshedAt?: string;
+    }
+  | { type: "scenario"; id: string; record: ScenarioRecord }
+  | { type: "invalid"; id: string }
   | { type: "busy"; id: string; busy: boolean };
 
 export const emptyInvestments: InvestmentsState = { items: [], activeId: null };
@@ -19,7 +46,15 @@ export function investmentsReducer(
     return {
       items: [
         ...state.items,
-        { id: action.id, analysis: action.analysis, busy: false },
+        {
+          id: action.id,
+          analysis: action.analysis,
+          busy: false,
+          role: action.role ?? "entered",
+          refreshedAt: action.refreshedAt ?? new Date().toISOString(),
+          needsRefresh: false,
+          history: [],
+        },
       ],
       activeId: action.id,
     };
@@ -47,13 +82,27 @@ export function investmentsReducer(
     return state;
   return {
     ...state,
-    items: state.items.map((item) =>
-      item.id !== action.id
-        ? item
-        : action.type === "analysis"
-          ? { ...item, analysis: action.analysis }
-          : { ...item, busy: action.busy },
-    ),
+    items: state.items.map((item) => {
+      if (item.id !== action.id) return item;
+      if (action.type === "analysis")
+        return {
+          ...item,
+          analysis: action.analysis,
+          role: action.role ?? item.role,
+          refreshedAt: action.refreshedAt ?? new Date().toISOString(),
+          needsRefresh: false,
+        };
+      if (action.type === "scenario")
+        return {
+          ...item,
+          history: [
+            action.record,
+            ...item.history.filter((r) => r.id !== action.record.id),
+          ].slice(0, HISTORY_LIMIT),
+        };
+      if (action.type === "invalid") return { ...item, needsRefresh: true };
+      return { ...item, busy: action.busy };
+    }),
   };
 }
 
