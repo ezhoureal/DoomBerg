@@ -32,7 +32,7 @@ MARKET = f"""marketId lltv irmAddress creationTimestamp
   loanAsset {{ {ASSET} }} collateralAsset {{ {ASSET} }}
   {ORACLE}
   morphoBlue {{ address }}
-  state {{ supplyAssetsUsd borrowAssetsUsd liquidityAssetsUsd collateralAssetsUsd utilization supplyApy borrowApy dailyPriceVariation }}
+  state {{ supplyAssetsUsd borrowAssetsUsd liquidityAssetsUsd collateralAssetsUsd utilization supplyApy borrowApy dailyPriceVariation price }}
   badDebt {{ usd }} realizedBadDebt {{ usd }}
   warnings {{ type level }}"""
 
