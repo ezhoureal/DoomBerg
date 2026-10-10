@@ -1,9 +1,9 @@
 """Stage 3 - Price the exit at the real position size, now and under stress.
 
 Exit plan:
-  - Held PT: sell it, priced with a live KyberSwap quote at size (else a live quote on its Pendle market,
-    else a constant-product estimate), widened by a stress multiplier because liquidity providers pull
-    out during incidents. Forgone fixed PT yield while the capital is redeployed.
+  - Held PT: sell it, priced with the cheaper of a live quote on its Pendle market and a live KyberSwap
+    quote at size (else a constant-product estimate), widened by a stress multiplier because liquidity
+    providers pull out during incidents. Forgone fixed PT yield while the capital is redeployed.
   - Market supply: withdraw, limited by instant liquidity; during an incident other lenders race for
     the same liquidity (run share r ~ Beta). If the loan asset itself is damaged, what was withdrawn must
     also be sold. Forgone supply yield on the withdrawn part while it is redeployed.
@@ -18,6 +18,8 @@ from .sources import pendle
 from .sources.pricing import swap_quote
 
 GAS_USD = 40.0
+# Above this, a KyberSwap quote is treated as a bad route and a Pendle AMM quote is sought.
+IMPLAUSIBLE_IMPACT = 0.20
 
 
 def _amm_impact(size: float, depth: float) -> float:
@@ -28,34 +30,71 @@ def _amm_impact(size: float, depth: float) -> float:
     return size / (half + size)
 
 
+def _kyber_quote(a, size: float, price: float | None) -> dict | None:
+    if not (a.address and price):
+        return None
+    q = swap_quote(a.address, int(a.attrs.get("decimals") or 18), size, price, a.chain_id or 1)
+    if not q:
+        return None
+    out = "USDT" if a.label.upper() == "USDC" else "USDC"
+    return {"impact": q["price_impact"], "source": "kyberswap",
+            "detail": f"Live KyberSwap route: sell ${size:,.0f} of {a.label} -> ${q['amount_out_usd']:,.0f} {out} "
+                      f"({q['price_impact']:.2%} impact, gas ${q['gas_usd']:.2f})"}
+
+
+def _pendle_quote(a, amm, size: float, price: float | None) -> dict | None:
+    under, decimals = amm.attrs.get("underlying"), a.attrs.get("decimals")
+    if not (a.address and amm.address and under and price and decimals):
+        return None
+    q = pendle.swap_quote(amm.address, a.address, under, int(size / price * 10 ** int(decimals)), a.chain_id or 1)
+    if not q:
+        return None
+    imp = q["price_impact"] + q["fee_usd"] / size
+    return {"impact": imp, "source": "pendle-api",
+            "detail": f"Live Pendle quote on {amm.label}: sell ${size:,.0f} of {a.label} -> "
+                      f"{q['price_impact']:.2%} impact + ${q['fee_usd']:,.0f} swap fee ({imp:.2%})"}
+
+
 def quote_asset_sale(g: DependencyGraph, asset_id: str, size: float) -> dict:
+    """Cheapest credible live quote for selling ``size`` USD of the asset.
+
+    Aggregators often route a PT through thin pools and quote 90%+ impact while its own Pendle AMM fills the
+    same size for well under 1%, so for a PT (or whenever KyberSwap looks implausible) the Pendle quote is
+    also taken and the cheaper of the two kept.
+    """
     a = g.nodes[asset_id]
     price = a.attrs.get("price_usd")
-    if a.address and price:
-        q = swap_quote(a.address, int(a.attrs.get("decimals") or 18), size, price, a.chain_id or 1)
-        if q:
-            out = "USDT" if a.label.upper() == "USDC" else "USDC"
-            return {"impact": q["price_impact"], "source": "kyberswap",
-                    "detail": f"Live KyberSwap route: sell ${size:,.0f} of {a.label} -> ${q['amount_out_usd']:,.0f} {out} "
-                              f"({q['price_impact']:.2%} impact, gas ${q['gas_usd']:.2f})"}
-    for e in g.out_edges(asset_id):
-        if e.type != "traded_on":
-            continue
-        amm = g.nodes[e.target]
-        under, decimals = amm.attrs.get("underlying"), a.attrs.get("decimals")
-        if a.address and amm.address and under and price and decimals:
-            q = pendle.swap_quote(amm.address, a.address, under, int(size / price * 10 ** int(decimals)), a.chain_id or 1)
-            if q:
-                imp = q["price_impact"] + q["fee_usd"] / size
-                return {"impact": imp, "source": "pendle-api",
-                        "detail": f"Live Pendle quote on {amm.label}: sell ${size:,.0f} of {a.label} -> "
-                                  f"{q['price_impact']:.2%} impact + ${q['fee_usd']:,.0f} swap fee ({imp:.2%})"}
+    amms = [g.nodes[e.target] for e in g.out_edges(asset_id) if e.type == "traded_on"]
+    kyber = _kyber_quote(a, size, price)
+    kyber_ok = kyber is not None and kyber["impact"] <= IMPLAUSIBLE_IMPACT
+
+    pendle_q = None
+    if a.attrs.get("kind") == "pt" or not kyber_ok:
+        pendle_q = next((q for q in (_pendle_quote(a, amm, size, price) for amm in amms) if q), None)
+
+    best = min((q for q in (pendle_q, kyber) if q), key=lambda q: q["impact"], default=None)
+    if best is not None and (pendle_q is not None or kyber_ok):
+        other = kyber if best is pendle_q else pendle_q
+        if other is not None:
+            name = "KyberSwap route" if other is kyber else "Pendle AMM quote"
+            best = {**best, "detail": f"{best['detail']}. Chose the cheaper quote; the {name} gave {other['impact']:.2%}"}
+        return best
+
+    # No credible live quote: estimate on the Pendle AMM's liquidity, unless KyberSwap's (implausible) quote is cheaper.
+    for amm in amms:
         liq = amm.attrs.get("liquidity_usd")
-        if liq is not None:
-            imp = _amm_impact(size, liq)
-            return {"impact": imp, "source": "pendle-api",
-                    "detail": f"Constant-product estimate on {amm.label} (liquidity ${liq:,.0f}): {imp:.2%}. "
-                              f"Rough upper bound: Pendle concentrates liquidity around the implied rate"}
+        if liq is None:
+            continue
+        imp = _amm_impact(size, liq)
+        if kyber is not None and kyber["impact"] <= imp:
+            break
+        detail = (f"Constant-product estimate on {amm.label} (liquidity ${liq:,.0f}): {imp:.2%}. "
+                  f"Rough upper bound: Pendle concentrates liquidity around the implied rate")
+        if kyber is not None:
+            detail += f". The KyberSwap route gave {kyber['impact']:.2%}, discarded as implausible"
+        return {"impact": imp, "source": "pendle-api", "detail": detail}
+    if kyber is not None:
+        return kyber
     return {"impact": 0.05, "source": "assumption",
             "detail": f"No route found for {a.label}; assumed 5% exit cost (unknown liquidity)"}
 
