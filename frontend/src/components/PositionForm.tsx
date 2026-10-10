@@ -17,18 +17,21 @@ type Req = {
 export default function PositionForm({
   onAnalyze,
   busy,
+  initial,
 }: {
   onAnalyze: (r: Req) => void;
   busy: boolean;
+  initial?: Req;
 }) {
-  const [kind, setKind] = useState<PositionKind>("market");
+  const [kind, setKind] = useState<PositionKind>(initial?.kind ?? "market");
   const [address, setAddress] = useState(
-    "0x1e9d614631a7df0ec07fb05b2c8cb2491575fd1a63a33bf187a6afb295a4fc64",
+    initial?.address ??
+      "0x1e9d614631a7df0ec07fb05b2c8cb2491575fd1a63a33bf187a6afb295a4fc64",
   );
-  const [chain, setChain] = useState(1);
-  const [size, setSize] = useState(1_000_000);
-  const [book, setBook] = useState(10_000_000);
-  const [horizon, setHorizon] = useState(30);
+  const [chain, setChain] = useState(initial?.chain_id ?? 1);
+  const [size, setSize] = useState(initial?.size_usd ?? 1_000_000);
+  const [book, setBook] = useState(initial?.book_usd ?? 10_000_000);
+  const [horizon, setHorizon] = useState(initial?.horizon_days ?? 30);
   const [presets, setPresets] = useState<Preset[]>([]);
 
   useEffect(() => {
