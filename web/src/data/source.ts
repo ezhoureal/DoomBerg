@@ -2,25 +2,29 @@ import type { RiskSnapshot } from "../protocol";
 import { SCHEMA_VERSION } from "../protocol";
 import mock from "./mockSnapshot.json";
 
-/**
- * Default: the Vite /api proxy to the Python backend. Static mock is opt-in;
- * never silently hide a backend outage by substituting bundled data.
- */
-export const usesStaticMock = import.meta.env.VITE_USE_MOCK === "true";
+/** Backend base URL. Defaults to the Vite /api proxy (see vite.config.ts). */
+const API = (import.meta.env.VITE_API_URL as string | undefined) || "/api";
 
-export async function loadSnapshot(signal?: AbortSignal): Promise<RiskSnapshot> {
-  const url = import.meta.env.VITE_SNAPSHOT_URL || "/api/snapshot";
-  let snapshot: RiskSnapshot;
-  if (usesStaticMock) snapshot = mock as RiskSnapshot;
-  else {
-    const response = await fetch(url, { signal, cache: "no-store" });
-    if (!response.ok) throw new Error(`Snapshot request failed: HTTP ${response.status}`);
-    snapshot = await response.json();
-  }
-  if (!snapshot || typeof snapshot.schemaVersion !== "string" || snapshot.schemaVersion.split(".")[0] !== SCHEMA_VERSION.split(".")[0])
-    throw new Error(`Unsupported snapshot schema; expected ${SCHEMA_VERSION}`);
-  if (!Array.isArray(snapshot.nodes) || !Array.isArray(snapshot.edges) || !Array.isArray(snapshot.positions)
-    || !Array.isArray(snapshot.incidents) || !snapshot.portfolio || !snapshot.riskParams
-    || !Number.isFinite(Date.parse(snapshot.asOf))) throw new Error("Incomplete risk snapshot");
+export interface SimEvent {
+  id: string;
+  title: string;
+  description: string;
+}
+
+export const staticMock = mock as RiskSnapshot;
+
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(API + path, { signal, cache: "no-store" });
+  if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function loadSnapshot(events: string[], signal?: AbortSignal): Promise<RiskSnapshot> {
+  const qs = events.length ? `?events=${events.map(encodeURIComponent).join(",")}` : "";
+  const snapshot = await get<RiskSnapshot>(`/snapshot${qs}`, signal);
+  if (snapshot?.schemaVersion?.split(".")[0] !== SCHEMA_VERSION.split(".")[0])
+    throw new Error(`Unsupported snapshot schema ${snapshot?.schemaVersion}, expected ${SCHEMA_VERSION}`);
   return snapshot;
 }
+
+export const loadEvents = (signal?: AbortSignal) => get<SimEvent[]>("/events", signal);

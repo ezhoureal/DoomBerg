@@ -10,7 +10,8 @@ import { Sidebar } from "./components/Sidebar";
 import { DetailPanel } from "./components/DetailPanel";
 
 export function App() {
-  const { snapshot, error, connected, staticMock } = useRiskSnapshot();
+  const [events, setEvents] = useState<string[]>([]);
+  const { snapshot, catalogue, offline } = useRiskSnapshot(events);
   const [localIncidents, setLocalIncidents] = useState<Incident[]>([]);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, Incident["status"]>>({});
   const [hiddenIncidents, setHiddenIncidents] = useState<string[]>([]);
@@ -28,9 +29,8 @@ export function App() {
     return m;
   }, [snapshot, risk]);
 
-  if (!snapshot || !risk) return <div className={`splash ${error ? "error" : ""}`}>
-    {error || "Connecting to Python backend…"}{error && <span>Retrying automatically…</span>}
-  </div>;
+  if (!snapshot || !risk) return <div className="splash">Loading snapshot…</div>;
+  const edited = localIncidents.length > 0 || hiddenIncidents.length > 0 || Object.keys(statusOverrides).length > 0;
 
   return (
     <div className="app">
@@ -46,24 +46,30 @@ export function App() {
           <span className="muted">bar = share of AUM depending on node</span>
         </div>
         <div className="muted small">
-          {snapshot.source === "mock" ? "MOCK DATA" : "LIVE"} · {new Date(snapshot.asOf).toISOString().slice(0, 16).replace("T", " ")} UTC
+          {snapshot.source.toUpperCase()} · {new Date(snapshot.asOf).toISOString().slice(0, 16).replace("T", " ")} UTC
         </div>
       </header>
-      <div className={`monitor-banner ${error ? "disconnected" : ""}`} role="status">
-        <span>
-          <b>{staticMock ? "STATIC MOCK" : connected ? "BACKEND CONNECTED" : "DISCONNECTED"}</b>
-          {error ? ` · ${error} Decisions may be outdated.` : snapshot.monitor
-            ? ` · Oracle: ${snapshot.monitor.status} · Reading #${snapshot.monitor.sequence}` : ""}
-          {snapshot.source === "mock" && " · Simulated data; portfolio losses and decisions use demo assumptions."}
+      <div className={`sim-bar ${offline ? "offline" : ""}`} role="status">
+        <span className="sim-mode">
+          {offline ? "BACKEND OFFLINE · static mock, retrying" : "SIMULATION · toggle risk events"}
         </span>
-        <div className="monitor-controls">
-          {snapshot.monitor && <button onClick={() => setSelection({ kind: "node", id: snapshot.monitor!.nodeId })}>
-            Inspect monitored oracle
-          </button>}
-          {(localIncidents.length > 0 || hiddenIncidents.length > 0 || Object.keys(statusOverrides).length > 0) &&
-            <button onClick={() => { setLocalIncidents([]); setHiddenIncidents([]); setStatusOverrides({}); }}>
+        <div className="sim-events">
+          {catalogue.map((e) => (
+            <button
+              key={e.id}
+              className={events.includes(e.id) ? "on" : ""}
+              title={e.description}
+              disabled={offline}
+              onClick={() => setEvents((xs) => (xs.includes(e.id) ? xs.filter((x) => x !== e.id) : [...xs, e.id]))}
+            >
+              {e.title}
+            </button>
+          ))}
+          {edited && (
+            <button className="reset" onClick={() => { setLocalIncidents([]); setHiddenIncidents([]); setStatusOverrides({}); }}>
               Reset incident edits
-            </button>}
+            </button>
+          )}
         </div>
       </div>
       <Sidebar

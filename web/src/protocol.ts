@@ -193,24 +193,12 @@ export interface Portfolio {
 export interface RiskSnapshot {
   schemaVersion: string;
   asOf: string; // ISO-8601
-  source: "mock" | "live";
+  /** mock: bundled static file; simulation: backend with simulated risk events; live: real data. */
+  source: "mock" | "simulation" | "live";
   portfolio: Portfolio;
   positions: Position[];
   nodes: GraphNode[];
   edges: GraphEdge[];
   incidents: Incident[];
   riskParams: RiskParams;
-  /** Optional backend producer metadata. observedAt is accelerated demo time;
-   * receivedAt and asOf use wall time. Financial inputs remain mock assumptions. */
-  monitor?: {
-    nodeId: string;
-    runId: string;
-    sequence: number;
-    scenario: string;
-    status: string;
-    observedAt: string;
-    receivedAt: string;
-    intervalSeconds: number;
-    simulation: boolean;
-  };
 }

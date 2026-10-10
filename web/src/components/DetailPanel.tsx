@@ -152,7 +152,7 @@ function PositionDetail({ snapshot, pr, onSelect }: Props & { pr: PositionRisk }
           <Stat label="Carry (yield)" value={usd(pr.carryUsd)} sub={`${pos.apr}% APR`} />
           <Stat label="Expected loss (total)" value={usd(pr.elUsd)} sub={bps(pr.elPct)} />
           <Stat label="of which baseline" value={usd(pr.baselineElUsd)} sub="underwritten at entry" />
-          <Stat label="Incident-driven EL" value={usd(pr.excessElUsd)} sub="avoided by exiting" strong />
+          <Stat label="Avoided by exiting" value={usd(pr.avoidableElUsd)} sub={`of ${usd(pr.excessElUsd)} incident EL`} strong />
           <Stat label="Exit cost" value={usd(pr.exitCostUsd)} sub={bps(pr.exitCostPct)} strong />
           <Stat label="Stressed loss" value={usd(pr.stressedLossUsd)} sub={`${pct(pr.stressedLossPct)} if incidents hit`} />
           <Stat
@@ -161,9 +161,9 @@ function PositionDetail({ snapshot, pr, onSelect }: Props & { pr: PositionRisk }
             sub={pr.breakEvenP === null ? "no active incident" : `current ${pct(pr.incidentP)}`}
           />
         </div>
-        <ElVsExit el={pr.excessElUsd} exit={pr.exitCostUsd} />
+        <ElVsExit el={pr.avoidableElUsd} exit={pr.exitCostUsd} />
         <div className="row small muted">
-          <span>■ incident EL</span>
+          <span>■ avoidable incident EL</span>
           <span>■ exit cost</span>
         </div>
       </div>
@@ -238,10 +238,6 @@ function NodeDetail({ snapshot, risk, warnings, node, onSelect, onAddIncident }:
         {node.type} · <span className={`chain chain-${node.chain}`}>{node.chain}</span>
       </p>
       {node.description && <p className="small">{node.description}</p>}
-      {snapshot.monitor?.nodeId === node.id && <p className="muted small">
-        Monitor warnings do not assign failure probabilities. To explore financial impact,
-        use the incident simulator below with explicit assumptions.
-      </p>}
 
       {ws.length > 0 && (
         <div className="card">

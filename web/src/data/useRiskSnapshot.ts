@@ -1,49 +1,42 @@
 import { useEffect, useState } from "react";
 import type { RiskSnapshot } from "../protocol";
-import { loadSnapshot, usesStaticMock } from "./source";
-import { producerStale } from "./incidentEdits";
+import { loadEvents, loadSnapshot, staticMock, type SimEvent } from "./source";
 
-export function useRiskSnapshot() {
+const RETRY_MS = 5000;
+
+/**
+ * Fetches the simulation snapshot for the selected events. If the backend is
+ * unreachable, shows the bundled static mock (labelled offline) and retries.
+ */
+export function useRiskSnapshot(events: string[]) {
   const [snapshot, setSnapshot] = useState<RiskSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
+  const [catalogue, setCatalogue] = useState<SimEvent[]>([]);
+  const [offline, setOffline] = useState(false);
+  const key = events.join(",");
 
   useEffect(() => {
-    let disposed = false;
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
-    let controller: AbortController;
-    let producerKey: string | undefined;
-    let lastAdvance = Date.now();
-    async function poll() {
-      controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 4000);
+    async function load() {
       try {
-        const next = await loadSnapshot(controller.signal);
-        if (disposed) return;
-        const key = next.monitor ? `${next.monitor.runId}:${next.monitor.sequence}` : next.asOf;
-        if (key !== producerKey) {
-          producerKey = key;
-          lastAdvance = Date.now();
-        }
-        const stale = !usesStaticMock && producerStale(lastAdvance, Date.now(), next.monitor?.intervalSeconds ?? 1);
-        setSnapshot(next);
-        setConnected(!stale);
-        setError(stale ? "Backend readings have stopped advancing. Last snapshot is shown." : null);
+        const [snap, cat] = await Promise.all([loadSnapshot(events, controller.signal), loadEvents(controller.signal)]);
+        setSnapshot(snap);
+        setCatalogue(cat);
+        setOffline(false);
       } catch (err) {
-        if (disposed) return;
-        setConnected(false);
-        setError(`Backend unavailable. Start python3 -m backend.snapshot_server. ${String(err)}`);
-      } finally {
-        clearTimeout(timeout);
-        if (!disposed && !usesStaticMock) timer = setTimeout(poll, 1000);
+        if (controller.signal.aborted) return;
+        console.warn("Backend unavailable, using static mock:", err);
+        setSnapshot((s) => (s && s.source !== "mock" ? s : staticMock));
+        setOffline(true);
+        timer = setTimeout(load, RETRY_MS);
       }
     }
-    void poll();
+    void load();
     return () => {
-      disposed = true;
+      controller.abort();
       clearTimeout(timer);
-      controller?.abort();
     };
-  }, []);
-  return { snapshot, error, connected, staticMock: usesStaticMock };
+  }, [key]);
+
+  return { snapshot, catalogue, offline };
 }

@@ -25,7 +25,9 @@ import type { GraphEdge, Incident, Position, RiskSnapshot, Severity } from "../p
  * 4. Decision: exiting costs C = slippage + fixed costs (certain). Staying costs the
  *    *incremental* EL caused by active incidents (uncertain): baseline risk was
  *    underwritten at entry, is paid for by the yield, and would follow the capital into
- *    any redeployment, so exiting does not avoid it. EXIT when incident EL >= C; WATCH
+ *    any redeployment, so exiting does not avoid it. Only the share that can be withdrawn
+ *    now (exitable fraction x) escapes, so exiting avoids x * incident EL and costs
+ *    x * value * slippage + fixed. EXIT when avoidable EL >= C; WATCH
  *    when incident EL is within `watchRatio` of C, total EL exceeds carry, the
  *    stressed loss (active incidents materialise) is large, or a high-severity incident
  *    sits in the dependency tree. The break-even incident probability p* tells the PM
@@ -56,7 +58,8 @@ export interface PositionRisk {
   stressedLossPct: number; // all active incidents in the tree materialise
   stressedLossUsd: number;
   baselineElUsd: number; // with active incidents removed
-  excessElUsd: number; // EL attributable to active incidents — what exiting actually avoids
+  excessElUsd: number; // EL attributable to active incidents
+  avoidableElUsd: number; // the part of excessElUsd on capital that can be withdrawn now
   carryUsd: number; // yield earned over the horizon by staying
   exitCostUsd: number;
   exitCostPct: number;
@@ -160,8 +163,14 @@ function expectedLossFraction(reach: Map<string, number>, probOf: (id: string) =
   return 1 - survive;
 }
 
+export function exitableFraction(pos: Position) {
+  return Math.max(0, Math.min(1, pos.exit.availableLiquidityUsd / pos.valueUsd));
+}
+
+/** Cost of exiting what can be withdrawn now (nothing to pay if the exit is blocked). */
 export function exitCost(pos: Position) {
-  return (pos.valueUsd * pos.exit.slippageBps) / 1e4 + pos.exit.fixedCostUsd;
+  const x = exitableFraction(pos);
+  return x > 0 ? (x * pos.valueUsd * pos.exit.slippageBps) / 1e4 + pos.exit.fixedCostUsd : 0;
 }
 
 function mulberry32(seed: number) {
@@ -215,21 +224,25 @@ export function computePortfolioRisk(snapshot: RiskSnapshot, incidents: Incident
     const incidentsInTree = incidents.filter((i) => i.status === "active" && reach.has(i.nodeId));
     const incidentP = 1 - incidentsInTree.reduce((s, i) => s * (1 - i.pFail), 1);
     const cost = exitCost(pos);
+    const exitable = exitableFraction(pos);
     const elUsd = elPct * pos.valueUsd;
     const stressedLossUsd = stressedLossPct * pos.valueUsd;
     const baselineElUsd = baselinePct * pos.valueUsd;
 
     let breakEvenP: number | null = null;
-    if (incidentsInTree.length && stressedLossUsd > baselineElUsd) {
-      breakEvenP = cost / (stressedLossUsd - baselineElUsd);
+    if (incidentsInTree.length && exitable > 0 && stressedLossUsd > baselineElUsd) {
+      breakEvenP = cost / (exitable * (stressedLossUsd - baselineElUsd));
     }
 
     const excessElUsd = Math.max(0, elUsd - baselineElUsd);
+    const avoidableElUsd = excessElUsd * exitable;
     const carryUsd = (pos.valueUsd * pos.apr * params.horizonDays) / (100 * 365);
     const r = decide({
       pos,
       elUsd,
       excessElUsd,
+      avoidableElUsd,
+      exitable,
       carryUsd,
       cost,
       stressedLossPct: stressedLossPct * 100,
@@ -249,10 +262,11 @@ export function computePortfolioRisk(snapshot: RiskSnapshot, incidents: Incident
       stressedLossUsd,
       baselineElUsd,
       excessElUsd,
+      avoidableElUsd,
       carryUsd,
       exitCostUsd: cost,
       exitCostPct: cost / pos.valueUsd,
-      exitableFraction: Math.min(1, pos.exit.availableLiquidityUsd / pos.valueUsd),
+      exitableFraction: exitable,
       breakEvenP,
       incidentP,
       incidentsInTree,
@@ -285,10 +299,15 @@ export function computePortfolioRisk(snapshot: RiskSnapshot, incidents: Incident
   };
 }
 
+const fmtUsd = (v: number) =>
+  v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(0)}k` : `$${v.toFixed(0)}`;
+
 function decide(a: {
   pos: Position;
   elUsd: number;
   excessElUsd: number;
+  avoidableElUsd: number;
+  exitable: number;
   carryUsd: number;
   cost: number;
   stressedLossPct: number;
@@ -299,13 +318,16 @@ function decide(a: {
   stressLossWatchPct: number;
 }): { decision: Decision; reasons: string[] } {
   const reasons: string[] = [];
-  const ratio = a.excessElUsd / a.cost;
+  const ratio = a.avoidableElUsd / Math.max(a.cost, 1e-9);
+  const blocked = a.exitable === 0;
   const fmtP = (p: number) => `${(p * 100).toFixed(1)}%`;
 
   if (a.incidentsInTree.length === 0) {
     reasons.push(`No active incident in the dependency tree; remaining risk is the baseline already underwritten.`);
-  } else if (a.excessElUsd >= a.cost) {
-    reasons.push(`Incident-driven expected loss is ${ratio.toFixed(1)}x the cost of exiting. Exiting is cheaper than staying.`);
+  } else if (blocked) {
+    reasons.push(`Exit is blocked: nothing can be withdrawn right now, so exiting cannot avoid the incident loss. Hedge, or pre-stage the exit for when liquidity returns.`);
+  } else if (a.avoidableElUsd >= a.cost) {
+    reasons.push(`Expected loss avoided by exiting is ${ratio.toFixed(1)}x the cost of exiting. Exiting is cheaper than staying.`);
   } else {
     reasons.push(`Exiting costs ${(1 / Math.max(ratio, 1e-9)).toFixed(1)}x the incident-driven expected loss of staying.`);
   }
@@ -322,17 +344,18 @@ function decide(a: {
   if (severe.length) reasons.push(`High-severity incident in dependency tree: ${severe.map((i) => i.title).join("; ")}.`);
   if (a.stressedLossPct >= a.stressLossWatchPct)
     reasons.push(`Stressed loss if incidents materialise: ${a.stressedLossPct.toFixed(1)}% of position.`);
-  if (a.pos.exit.availableLiquidityUsd < a.pos.valueUsd)
+  if (!blocked && a.exitable < 1)
     reasons.push(
-      `Only ${((a.pos.exit.availableLiquidityUsd / a.pos.valueUsd) * 100).toFixed(0)}% of the position can be exited right now.`,
+      `Only ${(a.exitable * 100).toFixed(0)}% of the position can be exited right now` +
+        (a.incidentsInTree.length ? `, so exiting avoids ${fmtUsd(a.avoidableElUsd)} of the ${fmtUsd(a.excessElUsd)} incident-driven loss.` : "."),
     );
   if (a.pos.exit.timeToExitHours >= 24)
     reasons.push(`Full exit takes ${a.pos.exit.timeToExitHours}h, so the decision must be made early.`);
 
   let decision: Decision = "STAY";
-  if (a.incidentsInTree.length > 0 && a.excessElUsd >= a.cost) decision = "EXIT";
+  if (a.incidentsInTree.length > 0 && !blocked && a.avoidableElUsd >= a.cost) decision = "EXIT";
   else if (
-    ratio >= a.watchRatio ||
+    (a.incidentsInTree.length > 0 && (blocked || ratio >= a.watchRatio)) ||
     severe.length > 0 ||
     a.stressedLossPct >= a.stressLossWatchPct ||
     a.elUsd > a.carryUsd

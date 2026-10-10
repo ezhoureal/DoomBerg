@@ -25,7 +25,7 @@ export function Sidebar(p: Props) {
   const counts = { EXIT: 0, WATCH: 0, STAY: 0 };
   for (const pr of risk.positions) counts[pr.decision]++;
   const sorted = [...risk.positions].sort(
-    (a, b) => DECISION_ORDER[a.decision] - DECISION_ORDER[b.decision] || b.excessElUsd - a.excessElUsd,
+    (a, b) => DECISION_ORDER[a.decision] - DECISION_ORDER[b.decision] || b.avoidableElUsd - a.avoidableElUsd,
   );
   const nodeLabel = new Map(snapshot.nodes.map((n) => [n.id, n.label]));
 
@@ -76,10 +76,10 @@ export function Sidebar(p: Props) {
                   <div className="row small muted">
                     <span>{usd(pr.position.valueUsd, 0)}</span>
                     <span>
-                      EL {usd(pr.excessElUsd)} vs exit {usd(pr.exitCostUsd)}
+                      EL {usd(pr.avoidableElUsd)} vs exit {usd(pr.exitCostUsd)}
                     </span>
                   </div>
-                  <ElVsExit el={pr.excessElUsd} exit={pr.exitCostUsd} />
+                  <ElVsExit el={pr.avoidableElUsd} exit={pr.exitCostUsd} />
                   <button
                     className={`focus ${focused ? "on" : ""}`}
                     title="Show only this position's dependency tree"

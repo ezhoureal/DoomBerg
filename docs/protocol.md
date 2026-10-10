@@ -4,15 +4,21 @@ Canonical types: [`web/src/protocol.ts`](../web/src/protocol.ts). Mock instance:
 
 The backend returns one `RiskSnapshot` JSON document containing the graph, metrics, incidents, exit quotes and model inputs. Measurements must be distinguished from assumptions: `pFail`, `lossGivenFailure` and loss-transmission factors are modeled inputs, not directly observable facts. In this demo, portfolio data, quotes and these inputs are mocked. Portfolio risk numbers (reach, expected loss, VaR and decisions) are derived in the frontend model (`web/src/model/`). Node warnings merge backend flags with client-side rules.
 
-The local default polls `/api/snapshot`, proxied by Vite to Python at `http://127.0.0.1:8000/snapshot`. Override with `VITE_SNAPSHOT_URL` or explicitly use the static mock with `VITE_USE_MOCK=true`. A connected backend may still serve simulated data and must keep `source: "mock"` in that case.
+## Backend modes
 
-## Python monitor integration
+`python3 -m backend.server` serves the snapshot on port 8000. Vite proxies `/api/*` to it; override the base with `VITE_API_URL`. If the backend is unreachable, the UI falls back to the bundled mock (`source: "mock"`), labelled offline, and keeps retrying.
 
-The adapter overlays synthetic readings onto `oracle-chainlink-btc`. Numeric keys include `priceUsd`, `stalenessSec`, `readResponseMs`, `priceChangePct`, `priceChangeIntervalSec`, and consecutive read counters. Unknown values are omitted (not null or zero). `priceChangePct` is not `deviationPct`: the latter requires a separate market reference.
+| endpoint | purpose |
+|---|---|
+| `GET /snapshot?events=a,b` | **Simulation mode** (`source: "simulation"`): the mock book plus the selected risk events |
+| `GET /snapshot?mode=live` | **Live data monitor**: not built yet (`501`) |
+| `GET /events` | simulated event catalogue `[{id, title, description}]` |
 
-Backend warning codes use a `monitor.` prefix and carry `severity` and `message`. Active warnings disappear when their condition clears; the monitor reports recovery until enough healthy readings arrive. Flags are not incidents and do not directly modify expected loss or STAY/WATCH/EXIT. No failure probabilities are derived automatically from a warning.
+Both modes go through the same pipeline: **observations → detection rules → incidents → model**.
 
-Optional top-level `monitor` metadata contains `nodeId`, `runId`, `sequence`, `scenario`, `status`, `observedAt`, `receivedAt`, `intervalSeconds`, and `simulation`. `observedAt` is accelerated simulation time. `asOf` and `receivedAt` are wall-clock timestamps. Clients use advancing run/sequence identifiers and request success to track connection freshness. Local incident edits are a separate overlay and survive refreshes.
+* An event (`backend/events.py`) is a set of observations: node metric changes (peg, oracle deviation or staleness, utilisation), exit-liquidity changes, and explicit incidents for signals no metric captures (exploit report, chain halt).
+* `backend/detect.py` turns metrics into incidents with stable ids (`det-<rule>-<nodeId>`). This is the only place where an observation becomes a `pFail`/`lossGivenFailure`. The mapping is a documented prior, not a calibrated estimate. Staleness is measured against each feed's own `heartbeatSec`.
+* The template's hand-written incidents are dropped, so every metric-driven incident in simulation mode comes from the rules. Live mode will feed real metrics into the same rules.
 
 ## Top level
 
@@ -20,7 +26,7 @@ Optional top-level `monitor` metadata contains `nodeId`, `runId`, `sequence`, `s
 |---|---|---|
 | `schemaVersion` | `"1.0"` | major version must match the frontend |
 | `asOf` | ISO-8601 | snapshot time |
-| `source` | `"mock" \| "live"` | |
+| `source` | `"mock" \| "simulation" \| "live"` | bundled file, backend simulation, real data |
 | `portfolio` | `{id, name, manager, aumUsd, baseCurrency}` | |
 | `positions[]` | `Position` | what we hold |
 | `nodes[]` | `GraphNode` | dependencies (chains, protocols, markets, vaults, assets, issuers, oracles, bridges, curators, custodians) |
@@ -84,9 +90,11 @@ While active: `p = 1 - (1 - p_baseline)(1 - p_incident)` and `LGF = max(LGF_base
 2. **Expected loss**: `EL = 1 − Π_f (1 − p_f · min(1, LGF_f · r_f))`, plus per-node marginal attribution.
 3. **Portfolio VaR/CVaR**: Monte Carlo over node failures. Shared nodes are drawn once per sample, so correlation between positions that share a dependency is kept.
 4. **Decision**: exiting avoids only the *incident-driven* EL (`EL − EL_baseline`). Baseline risk was underwritten at entry, is paid for by the yield, and would follow the capital into any redeployment.
-   * **EXIT** if incident EL ≥ exit cost (slippage + fixed costs).
+   * Only the **exitable fraction** `x = availableLiquidity / value` can escape. Exiting avoids `x · incident EL` and costs `x · value · slippage + fixed`.
+   * **EXIT** if avoidable EL ≥ exit cost.
+   * If nothing can be withdrawn (`x = 0`), exiting avoids nothing: an incident in the tree gives **WATCH**, never EXIT.
    * **WATCH** if incident EL ≥ `watchRatio` × exit cost, a high/critical incident is in the tree, stressed loss ≥ `stressLossWatchPct`, or total EL > carry over the horizon.
    * **STAY** otherwise.
-   * **Break-even probability** `p* = exit cost / (stressed loss − baseline EL)`. Exiting pays only if you believe the incident materialises with probability above p*.
+   * **Break-even probability** `p* = exit cost / (x · (stressed loss − baseline EL))`. Exiting pays only if you believe the incident materialises with probability above p*.
 
 Known simplifications: failures are independent apart from shared nodes, there is a single horizon, and exit cost is a static quote (it does not grow during a crisis).
