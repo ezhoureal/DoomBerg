@@ -1,4 +1,4 @@
-"""Pendle v2 API: resolves a PT address to its market, underlying, maturity and liquidity."""
+"""Pendle v2 API: resolves a PT address to its market, underlying, maturity and liquidity, and quotes PT sales."""
 
 from __future__ import annotations
 
@@ -39,3 +39,34 @@ def find_pt(pt_address: str, chain_id: int) -> dict | None:
                 "url": f"https://app.pendle.finance/trade/markets/{m.get('address')}?chain={chain_id}",
             }
     return None
+
+
+def asset(address: str, chain_id: int) -> dict | None:
+    """USD price and decimals of a Pendle asset (PT, YT, SY) from Pendle's own asset list."""
+    try:
+        d = get_json(f"{BASE}/v1/{chain_id}/assets/all", ttl=900)
+    except Exception:
+        return None
+    rows = d if isinstance(d, list) else (d or {}).get("assets", [])
+    a = next((x for x in rows if (x.get("address") or "").lower() == address.lower()), None)
+    if not a:
+        return None
+    return {"price_usd": (a.get("price") or {}).get("usd"), "decimals": a.get("decimals")}
+
+
+def swap_quote(market: str, pt: str, token_out: str, amount_raw: int, chain_id: int) -> dict | None:
+    """Quote selling ``amount_raw`` PT units on its Pendle market. Price impact is a positive fraction."""
+    if amount_raw <= 0:
+        return None
+    try:
+        d = get_json(f"{BASE}/v2/sdk/{chain_id}/markets/{market}/swap",
+                     params={"receiver": "0x000000000000000000000000000000000000dEaD", "slippage": 0.01,
+                             "enableAggregator": "false", "tokenIn": pt, "tokenOut": token_out, "amountIn": str(amount_raw)},
+                     ttl=120)
+    except Exception:
+        return None
+    data = (d or {}).get("data") or {}
+    if data.get("priceImpact") is None:
+        return None
+    # Pendle reports impact as a signed change in price: negative means the seller gets less.
+    return {"price_impact": max(0.0, -float(data["priceImpact"])), "fee_usd": float((data.get("fee") or {}).get("usd") or 0)}

@@ -104,7 +104,9 @@ class Simulator:
                     stale = sev
                 for e in outs:
                     if e.type == "reads_feed":
-                        oerr = oerr + get(OE, e.target)
+                        # Price = base / quote: a quote feed reading high makes the collateral look cheaper.
+                        sign = -1.0 if str(e.attrs.get("role", "")).startswith("quote") else 1.0
+                        oerr = oerr + sign * get(OE, e.target)
                         stale = np.maximum(stale, get(ST, e.target))
 
             elif t == "amm":
@@ -125,8 +127,10 @@ class Simulator:
 
             elif t == "market":
                 loss = self._market(node, outs, L, OE, ST, frozen, mode, n)
-                if own and mode == "exploit":
-                    loss = _combine(loss, sev)
+                if own and mode == "liquidity_drain":
+                    # A run strands the lent-out share of supply; a lender who needs out waits or sells the claim at a discount.
+                    util = min(max(node.attrs.get("utilization") or 0.0, 0.0), 1.0)
+                    loss = _combine(loss, sev * util)
 
             elif t == "position":
                 for e in outs:

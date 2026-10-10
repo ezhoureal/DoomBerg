@@ -126,3 +126,33 @@ def test_alert_raises_probability():
     alert = failure_probability(node, "depeg", 30, rng, alert="alert")["p"]
     confirmed = failure_probability(node, "depeg", 30, rng, alert="confirmed")["p"]
     assert base < alert < confirmed
+
+
+def test_market_liquidity_drain_hits_lenders_in_proportion_to_utilization():
+    busy = Simulator(build_market(util=0.9), seed=3).run("market", "liquidity_drain", n=3000, fixed_severity=0.2)
+    quiet = Simulator(build_market(util=0.3), seed=3).run("market", "liquidity_drain", n=3000, fixed_severity=0.2)
+    assert abs(busy.loss["position"].mean() - 0.18) < 0.02
+    assert 0 < quiet.loss["position"].mean() < busy.loss["position"].mean()
+
+
+def test_quote_feed_overreport_underprices_collateral():
+    g = build_market(util=0.5)
+    add(g, [Node("qfeed", "feed", "USDC / USD")], [])
+    g.add_edge(Edge("oracle", "qfeed", "reads_feed", attrs={"role": "quoteFeedOne"}))
+    sim = Simulator(g, seed=2).run("qfeed", "oracle_wrong_price", n=2000, fixed_severity=1.0)
+    assert (sim.oerr["oracle"] < 0).all() and sim.loss["market"].mean() < 1e-6
+
+
+def test_exit_benefit_counts_only_withdrawable_share():
+    # 30% x 50% = 15% expected loss vs 11% exit cost: EXIT if fully liquid, STAY if only half can get out.
+    full = decide(1e6, 1e7, np.full(100, 0.30), np.full(100, 0.50), 0.11, None, 1.0)
+    half = decide(1e6, 1e7, np.full(100, 0.30), np.full(100, 0.50), 0.11, None, 0.5)
+    assert full["verdict"] == "EXIT" and half["verdict"] == "STAY"
+    assert abs(half["break_even_probability"] - 0.44) < 1e-9 and round(half["avoidable_loss_usd"]) == 75_000
+
+
+def test_zero_age_counts_as_young_but_unknown_age_does_not():
+    from risk_engine.failures import hazard_prior
+    _, rate_new, _ = hazard_prior("exploit", "protocol", {}, {"age_days": 0})
+    _, rate_unknown, _ = hazard_prior("exploit", "protocol", {}, {"age_days": None})
+    assert rate_new < rate_unknown  # lower Gamma rate parameter = higher hazard

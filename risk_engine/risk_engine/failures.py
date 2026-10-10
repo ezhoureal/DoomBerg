@@ -91,6 +91,11 @@ def applicable_modes(node_type: str, node_attrs: dict | None = None) -> list[Fai
     return out
 
 
+def _below(value: float | None, limit: float) -> bool:
+    """True when a known value is under the limit; a missing value (None) never triggers, a real 0 does."""
+    return value is not None and value < limit
+
+
 def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[float, float, list[str]]:
     """Return (shape, rate) of a Gamma prior on the annual failure rate, plus the reasons for multipliers."""
     reasons: list[str] = []
@@ -123,9 +128,9 @@ def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[floa
             m(1.5, "single price source")
         if rf.get("stale_now"):
             m(20.0 if mode == "oracle_stale" else 2.0, "feed is stale right now")
-        if (rf.get("collateral_tvl_usd") or 1e12) < 10e6:
+        if _below(rf.get("collateral_tvl_usd"), 10e6):
             m(2.0, "thinly traded collateral is cheaper to manipulate")
-        if (rf.get("age_days") or 9999) < 180:
+        if _below(rf.get("age_days"), 180):
             m(1.5, "market younger than 6 months")
     elif mode == "depeg":
         if rf.get("offchain_backing"):
@@ -169,7 +174,7 @@ def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[floa
             m(0.15, "immutable, heavily audited core contract")
         if rf.get("audited_major"):
             m(0.4, "major protocol with multiple audits")
-        if (rf.get("age_days") or 9999) < 365:
+        if _below(rf.get("age_days"), 365):
             m(2.0, "deployed less than a year ago")
         if (rf.get("tvl_usd") or 0) > 1e9:
             m(0.7, "survived with > $1B TVL (Lindy)")
