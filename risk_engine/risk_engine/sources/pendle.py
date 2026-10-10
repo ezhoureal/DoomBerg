@@ -55,13 +55,13 @@ def asset(address: str, chain_id: int) -> dict | None:
 
 
 def swap_quote(market: str, pt: str, token_out: str, amount_raw: int, chain_id: int) -> dict | None:
-    """Quote selling ``amount_raw`` PT units on its Pendle market. Price impact is a positive fraction."""
+    """Quote a complete PT sale into the requested exit token, including aggregator routing."""
     if amount_raw <= 0:
         return None
     try:
         d = get_json(f"{BASE}/v2/sdk/{chain_id}/markets/{market}/swap",
                      params={"receiver": "0x000000000000000000000000000000000000dEaD", "slippage": 0.01,
-                             "enableAggregator": "false", "tokenIn": pt, "tokenOut": token_out, "amountIn": str(amount_raw)},
+                             "enableAggregator": "true", "tokenIn": pt, "tokenOut": token_out, "amountIn": str(amount_raw)},
                      ttl=120)
     except Exception:
         return None
@@ -69,4 +69,12 @@ def swap_quote(market: str, pt: str, token_out: str, amount_raw: int, chain_id: 
     if data.get("priceImpact") is None:
         return None
     # Pendle reports impact as a signed change in price: negative means the seller gets less.
-    return {"price_impact": max(0.0, -float(data["priceImpact"])), "fee_usd": float((data.get("fee") or {}).get("usd") or 0)}
+    try:
+        amount_out = int(data["amountOut"])
+        if amount_out <= 0:
+            return None
+        return {"amount_out": amount_out, "token_out": token_out,
+                "price_impact": max(0.0, -float(data["priceImpact"])),
+                "fee_usd": float((data.get("fee") or {}).get("usd") or 0)}
+    except (KeyError, TypeError, ValueError):
+        return None

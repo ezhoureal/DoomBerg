@@ -384,10 +384,20 @@ export default function Answer({
           <div className="card">
             <div className="card-h">Decision calculation</div>
             <p className="mono">
-              {pct(d.probability)} × {pct(d.loss_given_failure.mean)} ={" "}
-              {pct(d.expected_loss_pct, 2)} {exit ? ">" : "≤"}{" "}
-              {pct(d.exit_cost_pct, 2)} exit cost
+              {pct(d.probability)} × {pct(d.loss_given_failure.mean)}
+              {d.avoidable_loss_pct !== undefined ? (
+                <> × {pct(d.instant_fraction)} withdrawable</>
+              ) : null}{" "}
+              = {pct(d.avoidable_loss_pct ?? d.expected_loss_pct, 2)}{" "}
+              {exit ? ">" : "≤"} {pct(d.exit_cost_pct, 2)} exit cost
             </p>
+            {d.avoidable_loss_pct !== undefined && (
+              <p className="execution-note">
+                An immediate exit can avoid {usd(d.avoidable_loss_usd)} of the{" "}
+                {usd(d.expected_loss_usd)} expected loss. The portion that
+                cannot be withdrawn stays exposed.
+              </p>
+            )}
             <p>
               {d.probability_source === "override"
                 ? "This recommendation uses a fixed user-supplied probability. It does not provide a calibrated confidence in the decision."

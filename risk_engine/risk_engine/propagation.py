@@ -102,12 +102,18 @@ class Simulator:
                     oerr = np.where(over, sev, -sev)
                 if own and mode == "oracle_stale":
                     stale = sev
+                price_factor = 1.0 + oerr
                 for e in outs:
                     if e.type == "reads_feed":
-                        # Price = base / quote: a quote feed reading high makes the collateral look cheaper.
-                        sign = -1.0 if str(e.attrs.get("role", "")).startswith("quote") else 1.0
-                        oerr = oerr + sign * get(OE, e.target)
+                        # Compose price ratios exactly: base feeds multiply,
+                        # quote feeds divide. Keep zero-price failures finite.
+                        factor = np.maximum(1.0 + get(OE, e.target), 1e-9)
+                        if str(e.attrs.get("role", "")).startswith("quote"):
+                            price_factor = price_factor / factor
+                        else:
+                            price_factor = price_factor * factor
                         stale = np.maximum(stale, get(ST, e.target))
+                oerr = price_factor - 1.0
 
             elif t == "amm":
                 if own and mode == "liquidity_drain":
