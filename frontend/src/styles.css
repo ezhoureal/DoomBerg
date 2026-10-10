@@ -1287,7 +1287,7 @@ p {
   color: #686257;
   margin-bottom: 12px;
 }
-.path {
+.failure-path {
   display: flex;
   flex-direction: column;
 }

@@ -13,7 +13,11 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import type { Analysis, Catalog, ShockResult } from "../types";
-import Graph, { type ColorMode } from "./Graph";
+import Graph, {
+  initialGraphUi,
+  type ColorMode,
+  type GraphUi,
+} from "./Graph";
 import PositionForm from "./PositionForm";
 import TopRisks from "./TopRisks";
 import Inspector from "./Inspector";
@@ -52,6 +56,7 @@ export default function InvestmentWorkspace({
   const [tracedAt, setTracedAt] = useState<string | null>(() =>
     initialAnalysis ? traceTime() : null,
   );
+  const [graphUi, setGraphUi] = useState<GraphUi>(initialGraphUi);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     onBusy(!!busy);
@@ -74,6 +79,7 @@ export default function InvestmentWorkspace({
       setSelected(null);
       setPreMode(null);
       setView("dependencies");
+      setGraphUi(initialGraphUi);
       setTracedAt(traceTime());
       setPositionOpen(false);
     } catch (e: any) {
@@ -368,6 +374,8 @@ export default function InvestmentWorkspace({
                     onSelect={choose}
                     colorMode={colorMode}
                     active={active}
+                    ui={graphUi}
+                    onUi={setGraphUi}
                   />
                   {busy === "shock" && (
                     <div className="overlay" role="status">
