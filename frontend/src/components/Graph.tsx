@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   applyNodeChanges,
   Background,
@@ -9,11 +17,13 @@ import {
   Position,
   ReactFlow,
   useReactFlow,
+  useStore,
   ReactFlowProvider,
   type Edge,
   type Node,
   type NodeChange,
   type NodeProps,
+  type Viewport,
 } from "@xyflow/react";
 import { ChevronDown, Expand, Layers, RotateCcw } from "lucide-react";
 import dagre from "@dagrejs/dagre";
@@ -27,8 +37,8 @@ import {
   type ViewGraph,
 } from "../ui/graphView";
 export type ColorMode = "risk" | "type";
-const W = 220,
-  H = 66;
+const W = 260,
+  H = 86;
 type DepData = {
   n: GNode;
   colorMode: ColorMode;
@@ -56,7 +66,7 @@ const DepNode = memo(({ data }: NodeProps<Node<DepData>>) => {
           : meta.color;
   return (
     <div
-      className={`dep-node ${n.type === "group" ? "group-node" : ""} ${selected ? "sel" : ""} ${onPath ? "path" : ""} ${isShock ? "shock" : ""}`}
+      className={`dep-node ${n.type === "group" ? "group-node" : ""} ${selected ? "graph-selected" : ""} ${onPath ? "on-failure-path" : ""} ${isShock ? "shock" : ""}`}
       style={{ ["--accent" as any]: accent, opacity: dim ? 0.42 : 1 }}
     >
       <Handle type="target" position={Position.Left} className="h" />
@@ -123,7 +133,7 @@ function layout(view: ViewGraph) {
     }),
   );
 }
-// View settings live in App so they survive the graph unmounting while Results is open.
+// View settings live in the workspace so they survive the graph unmounting while Results is open.
 export type GraphUi = {
   all: boolean;
   expanded: Set<GroupKey>;
@@ -143,11 +153,22 @@ function Inner({
   selected,
   onSelect,
   colorMode,
-  fitKey,
+  active = true,
   ui,
   onUi,
 }: Props) {
   const rf = useReactFlow();
+  // Every open investment keeps its graph mounted, so each React Flow needs
+  // its own id or their SVG marker and background pattern ids collide.
+  const flowId = `graph-${useId().replace(/[^\w-]/g, "")}`;
+  const width = useStore((s) => s.width);
+  const height = useStore((s) => s.height);
+  const fitted = useRef<string | null>(null);
+  // The graph stays fitted while its canvas resizes (the inspector opening,
+  // a tab becoming visible) until the user pans or zooms it themselves.
+  const autoFit = useRef(true);
+  const moveStart = useRef<Viewport | null>(null);
+  const [fitRequest, setFitRequest] = useState(0);
   const { all, expanded, pathOnly } = ui;
   const revealKey = `${selected}|${result?.shock.node_id}|${result?.shock.mode}`;
   const revealOn = ui.collapsedFor !== revealKey;
@@ -203,7 +224,7 @@ function Inner({
         : base,
     [base, pathOnly, result, pathView],
   );
-  // Re-layout and re-fit only when the drawn graph changes, not on every selection.
+  // Re-layout only when the drawn graph changes, not on every selection.
   const structure = `${view.nodes.map((n) => n.id).join(",")}|${view.edges.map((e) => e.id).join(",")}`;
   const positions = useMemo(() => layout(view), [structure]);
   const lossOf = (n: GNode) => {
@@ -219,6 +240,9 @@ function Inner({
           id: n.id,
           type: "dep",
           position: positions[n.id],
+          // Use the same box dimensions for React Flow and Dagre. Selection only
+          // changes the highlight, so it cannot enlarge a card into its neighbour.
+          style: { width: W, height: H },
           data: {
             n,
             colorMode,
@@ -282,13 +306,20 @@ function Inner({
       },
     };
   });
+  const fit = () => {
+    autoFit.current = true;
+    rf.fitView({ padding: 0.15, duration: 250 });
+  };
   useEffect(() => {
-    const t = setTimeout(
-      () => rf.fitView({ padding: 0.15, duration: 250 }),
-      80,
-    );
-    return () => clearTimeout(t);
-  }, [structure, rf, fitKey]);
+    // Fit a newly loaded investment, an explicit reset, or a resized canvas
+    // the user hasn't moved. Selecting nodes and expanding groups keep the
+    // current zoom. fitView waits until React Flow has measured the nodes.
+    if (!active || !width || !height) return;
+    const key = `${analysis.position_id}:${fitRequest}`;
+    if (fitted.current === key && !autoFit.current) return;
+    fitted.current = key;
+    fit();
+  }, [analysis.position_id, fitRequest, active, width, height]);
   const set = (u: Partial<GraphUi>) => onUi({ ...ui, ...u });
   return (
     <>
@@ -320,13 +351,14 @@ function Inner({
         )}
         <button
           className="tool-button"
-          onClick={() =>
+          onClick={() => {
             onUi({
               ...initialGraphUi,
               expanded: new Set(),
               collapsedFor: revealKey,
-            })
-          }
+            });
+            setFitRequest((request) => request + 1);
+          }}
           title="Collapse groups"
         >
           <RotateCcw size={13} />
@@ -334,7 +366,7 @@ function Inner({
         </button>
         <button
           className="tool-button"
-          onClick={() => rf.fitView({ padding: 0.15, duration: 250 })}
+          onClick={fit}
           title="Fit graph"
         >
           <Expand size={14} />
@@ -342,6 +374,7 @@ function Inner({
       </div>
       <div className="graph-canvas">
         <ReactFlow
+          id={flowId}
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
@@ -352,6 +385,19 @@ function Inner({
             else onSelect(n.id);
           }}
           onPaneClick={() => onSelect(null)}
+          onMoveStart={(_, viewport) => (moveStart.current = viewport)}
+          onMoveEnd={(event, viewport) => {
+            // Programmatic moves (fitView) have no source event, and a plain
+            // click on the pane starts a move without changing the viewport.
+            const start = moveStart.current;
+            if (
+              event &&
+              (start?.x !== viewport.x ||
+                start?.y !== viewport.y ||
+                start?.zoom !== viewport.zoom)
+            )
+              autoFit.current = false;
+          }}
           minZoom={0.15}
           maxZoom={1.8}
           nodesDraggable
@@ -363,7 +409,13 @@ function Inner({
             size={1}
             color="#d8d4cd"
           />
-          <Controls showInteractive={false} position="bottom-right" />
+          <Controls
+            showInteractive={false}
+            position="bottom-right"
+            onZoomIn={() => (autoFit.current = false)}
+            onZoomOut={() => (autoFit.current = false)}
+            onFitView={() => (autoFit.current = true)}
+          />
         </ReactFlow>
       </div>
       <div className="graph-footer">
@@ -404,7 +456,7 @@ type Props = {
   selected: string | null;
   onSelect: (id: string | null) => void;
   colorMode: ColorMode;
-  fitKey: string;
+  active?: boolean;
   ui: GraphUi;
   onUi: (ui: GraphUi) => void;
 };

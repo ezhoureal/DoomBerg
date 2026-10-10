@@ -163,14 +163,14 @@ p {
 .nav-risk {
   margin-top: 15px;
   border-top: 1px solid var(--line);
-  flex: 1;
 }
 .nav-footer {
   display: flex;
   gap: 9px;
   align-items: center;
   color: var(--muted);
-  margin: 24px 8px 0;
+  margin: auto 8px 0;
+  padding-top: 24px;
   font-size: 11px;
 }
 .nav-footer small {
@@ -218,6 +218,116 @@ p {
 }
 .service-state.offline i {
   background: var(--red);
+}
+.investment-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 15px 2px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.investment-caption {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.investment-caption b {
+  font-weight: 500;
+  margin-left: 4px;
+}
+.investment-tab-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: 360px;
+  min-width: 0;
+  scrollbar-width: thin;
+  padding: 3px;
+}
+.investment-tab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  gap: 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+.investment-tab:hover {
+  background: #f0eee8;
+}
+.investment-tab.active {
+  background: #fff;
+  border-color: #d9d2c5;
+  box-shadow: 0 1px 3px #00000005;
+}
+.investment-tab-select {
+  padding: 9px 7px 9px 11px;
+  border: 0;
+  background: none;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+  border-radius: 4px;
+}
+.investment-tab-label {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 500;
+}
+.investment-tab-select small {
+  display: block;
+  font-size: 9px;
+  line-height: 13px;
+  color: var(--muted);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.investment-tab-close {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin-right: 5px;
+  border: 0;
+  background: none;
+  border-radius: 3px;
+  color: var(--muted);
+}
+.investment-tab-close:hover {
+  background: #eae6de;
+}
+.investment-tab-busy {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.investment-tab-add {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 9px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+.investment-tab-add:hover {
+  background: #eeeae3;
 }
 .page-heading {
   padding: 30px 30px 22px;
@@ -458,9 +568,10 @@ p {
   padding: 0;
 }
 .dep-node {
-  width: 220px;
-  height: 66px;
+  width: 100%;
+  height: 100%;
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 9px;
   padding: 10px;
@@ -473,11 +584,11 @@ p {
 .dep-node:hover {
   border-color: #aba396;
 }
-.dep-node.sel {
+.dep-node.graph-selected {
   outline: 2px solid #9a8760;
   outline-offset: 2px;
 }
-.dep-node.path,
+.dep-node.on-failure-path,
 .dep-node.shock {
   border-color: #b55e50;
   background: #fff6f2;
@@ -499,24 +610,39 @@ p {
 }
 .dep-type {
   font-size: 9px;
+  line-height: 12px;
   color: var(--muted);
   margin-bottom: 3px;
-}
-.dep-label {
-  font-size: 11px;
-  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.dep-label {
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 600;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+}
 .dep-sub {
   font-size: 9px;
+  line-height: 12px;
   color: var(--dim);
   margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .dep-badge {
   font-size: 10px;
-  align-self: flex-start;
+  line-height: 14px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  align-self: center;
 }
 .h {
   opacity: 0;
@@ -1369,6 +1495,13 @@ p {
   }
 }
 @media (max-width: 650px) {
+  .investment-bar {
+    gap: 6px;
+    padding: 12px 0 0;
+  }
+  .investment-tab-strip {
+    max-height: 200px;
+  }
   .app {
     flex-direction: column;
   }
