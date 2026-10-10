@@ -97,7 +97,12 @@ def _below(value: float | None, limit: float) -> bool:
 
 
 def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[float, float, list[str]]:
-    """Return (shape, rate) of a Gamma prior on the annual failure rate, plus the reasons for multipliers."""
+    """Return (shape, rate) of a Gamma prior on the annual failure rate, plus the reasons for multipliers.
+
+    Only structural factors live here. What is happening right now (a stale feed, a peg slipping) is a
+    monitoring signal: ``signals.py`` turns it into an alert level and ``probability.py`` applies it as a
+    likelihood ratio, so it is not counted twice.
+    """
     reasons: list[str] = []
     if mode == "depeg":
         p = DEPEG_PRIORS.get(attrs.get("kind", "unknown"), DEPEG_PRIORS["unknown"])
@@ -126,8 +131,6 @@ def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[floa
                 m(3.0, "oracle does not follow the market price at all")
         if rf.get("single_feed"):
             m(1.5, "single price source")
-        if rf.get("stale_now"):
-            m(20.0 if mode == "oracle_stale" else 2.0, "feed is stale right now")
         if _below(rf.get("collateral_tvl_usd"), 10e6):
             m(2.0, "thinly traded collateral is cheaper to manipulate")
         if _below(rf.get("age_days"), 180):
@@ -137,8 +140,6 @@ def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[floa
             m(1.3, "backing held off-chain, not verifiable on-chain")
         if rf.get("unverified"):
             m(1.5, "issuer not in curated registry")
-        if (rf.get("price_deviation") or 0) > 0.02:
-            m(10.0, f"trading {rf['price_deviation']:.1%} away from peg now")
         if rf.get("young"):
             m(1.5, "token younger than 1 year")
     elif mode == "unbacked_mint":

@@ -25,7 +25,7 @@ A glossary of every term used is in [section 13](#13-glossary).
 6. [What can go wrong: the dependencies](#6-what-can-go-wrong-the-dependencies)
 7. [The challenge](#7-the-challenge)
 8. [Our solution](#8-our-solution)
-9. [The decision rule](#9-the-decision-rule)
+9. [The decision rule](#9-the-decision-rule) (and [daily monitoring](#91-daily-monitoring))
 10. [Architecture and data sources](#10-architecture-and-data-sources)
 11. [Repository layout and running it](#11-repository-layout-and-running-it)
 12. [Limitations](#12-limitations)
@@ -469,6 +469,29 @@ For a market supply, only the share that can be withdrawn right now escapes the 
 | 25% | 44% |
 | 10% | Never: exiting costs more than the worst case |
 
+### 9.1 Daily monitoring
+
+The same rule runs every day on a watchlist, but against what has **changed**. Base rates are the risk accepted when the position was entered, and the yield pays for it; judged against the exit cost alone they would say EXIT every day. So the daily verdict is:
+
+> **Exit if:** (today's probability − base-rate probability) × loss if it fails × withdrawable share, summed over components > cost of exiting now
+
+Today's probability moves for two reasons, neither typed in by a person:
+
+1. **Signal rules set the alert level** of each (component, failure mode), which feeds the likelihood-ratio update. Level rules read live data: a stablecoin more than 0.5% off its peg (watch) or 2% (alert), the oracle pricing the collateral 2% / 5% above the market, a feed past its heartbeat, utilization above 97% / 99.5%, unrealized bad debt, the collateral's 24h price move. Change rules compare with the stored history: supply or AMM liquidity withdrawn over 24h, a token's 24h drop, a jump in the PT's implied APY. Two independent rule families at once escalate to *corroborated*. *Confirmed* is left to a person.
+2. **Failure rates vary over time** (`contagion.py`): a Hawkes-style term raises a component's hazard after recent related events (a failure or an alert on the same component, the same asset class, or anywhere), decaying with a 30-day time constant and capped at x5.
+
+Each scheduled run is stored in SQLite (`history.py`): the verdict, every (component, mode) probability, the signals and the raw readings. Comparing with the previous run raises notifications when the verdict flips, a probability crosses its break-even, an alert level rises, or expected loss doubles; they are logged, stored and, if `ALERT_WEBHOOK_URL` is set, posted to Slack. Recording outcomes (`POST /api/monitor/outcomes`) closes the loop: `calibration.py` scores matured forecasts (Brier score, a reliability table) and estimates each alert level's likelihood ratio from data, which can later replace the hand-set values.
+
+Incident replay is not part of the daily loop. It tests the model after a change; it does not run it.
+
+```bash
+uv --directory backend run python scripts/monitor.py               # screen and record the watchlist once (cron it)
+uv --directory backend run python scripts/monitor.py --every 3600  # or keep it running
+uv --directory backend run python scripts/monitor.py --calibration # how good were past forecasts?
+```
+
+Setting `MONITOR_INTERVAL_S` in `backend/.env` runs the same loop inside the API process instead.
+
 ---
 
 ## 10. Architecture and data sources
@@ -501,13 +524,18 @@ Exit quotes come from the KyberSwap aggregator, measured as raw output units val
 │   │   ├── discovery.py        # traces a held PT, or a Morpho market with PT collateral, into the dependency graph
 │   │   ├── failures.py         # failure modes, hazard priors and risk-factor multipliers
 │   │   ├── probability.py      # Gamma-Poisson failure probability + Bayesian alert update
+│   │   ├── signals.py          # monitoring rules: live readings -> alert level per component and failure mode
+│   │   ├── contagion.py        # Hawkes-style time-varying hazard from recent related events
+│   │   ├── history.py          # SQLite run history: runs, forecasts, signals, readings, outcomes, events
+│   │   ├── notify.py           # what changed since the last run, webhook delivery
+│   │   ├── calibration.py      # Brier score, reliability table, empirical alert likelihood ratios
 │   │   ├── propagation.py      # Monte Carlo propagation of a shock along the graph
 │   │   ├── exit_cost.py        # size-aware, stress-aware cost of leaving now
 │   │   ├── decision.py         # the rule in section 9, break-even table, confidence
 │   │   ├── explain.py          # LLM narrative (or template fallback)
 │   │   └── engine.py           # RiskEngine: analyze / screen / shock / replay, presets
 │   └── tests/                  # offline tests on synthetic PT graphs (brief examples, LLTV buffer, blind oracle, ...)
-├── backend/                    # FastAPI wrapper (app/api.py), serves frontend/dist if built
+├── backend/                    # FastAPI wrapper (app/api.py), serves frontend/dist if built; scripts/monitor.py
 └── frontend/                   # React UI: position form, graph, inspector, answer panel
 ```
 
@@ -526,9 +554,9 @@ npm run dev        # API on http://127.0.0.1:8000 and UI on http://localhost:517
 | `npm start` | Build the UI, then run the backend alone; it serves the UI at http://127.0.0.1:8000 |
 | `npm test` | Risk engine tests |
 
-Optional settings go in `backend/.env` (see `.env.example`): `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for the narrative, and `RPC_URL_<chainId>` to use your own RPC endpoints instead of the public defaults.
+Optional settings go in `backend/.env` (see `.env.example`): `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for the narrative, `RPC_URL_<chainId>` to use your own RPC endpoints instead of the public defaults, and for monitoring `HISTORY_DB`, `WATCHLIST`, `MONITOR_INTERVAL_S` and `ALERT_WEBHOOK_URL`.
 
-**Main API endpoints:** `POST /api/analyze` (trace a position and screen every node), `POST /api/shock` (break a component and get the verdict), `POST /api/replay` (re-run a past incident), `GET /api/presets` (reference PTs), `GET /api/catalog`.
+**Main API endpoints:** `POST /api/analyze` (trace a position and screen every node; `record: true` stores the run), `POST /api/shock` (break a component and get the verdict; `alert: "auto"` uses the live signals), `POST /api/replay` (re-run a past incident), `GET /api/presets` (reference PTs), `GET /api/catalog`. Monitoring: `POST /api/monitor/run` (screen and record the watchlist now), `GET /api/monitor/positions`, `GET /api/monitor/history?position_key=`, `GET /api/monitor/events`, `POST /api/monitor/outcomes`, `GET /api/monitor/calibration`.
 
 ---
 
@@ -539,6 +567,7 @@ Optional settings go in `backend/.env` (see `.env.example`): `OPENAI_API_KEY` or
 - **Coverage is narrow by design.** One position type traced deeply and correctly is worth more than many traced badly.
 - **Off-chain parts are only partly visible.** A custodian or a centralised exchange cannot be read from the chain.
 - **Exit cost is a snapshot.** It can worsen within minutes during an incident.
+- **Signal thresholds, contagion weights and alert likelihood ratios are set by hand** until enough recorded outcomes exist to calibrate them. Change rules need at least one earlier run within 24h, and a daily schedule cannot see an intraday move that has already reverted.
 - **This is a hackathon prototype**, not a production risk system and not investment advice.
 
 ---

@@ -1171,6 +1171,32 @@ p {
     transform: rotate(360deg);
   }
 }
+/* Live monitoring signals */
+.live-monitor {
+  margin-bottom: 18px;
+}
+.live-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.live-head b {
+  font-size: 13px;
+  font-weight: 600;
+}
+.verdict-exit {
+  color: var(--red);
+}
+.verdict-stay {
+  color: var(--blue);
+}
+.live-note {
+  margin: 6px 0;
+  font-size: 10px;
+  color: var(--muted);
+}
 /* Risk contributors and component inspection */
 .risk-baseline {
   font-size: 10px;

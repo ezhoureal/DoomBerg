@@ -153,12 +153,23 @@ class Discovery:
         created = m.get("creationTimestamp")
         age_days = round((time.time() - int(created)) / 86400) if created else None
         label = f"{coll.get('symbol', '?')} / {loan['symbol']}"
+        # Morpho oracle price is scaled by 1e36 * 10^(loan decimals - collateral decimals): loan units per collateral unit.
+        oracle_px = dex_px = gap = None
+        if st.get("price") and coll.get("decimals") is not None and loan.get("decimals") is not None:
+            oracle_px = int(st["price"]) / 10 ** (36 + int(loan["decimals"]) - int(coll["decimals"]))
+        cu, lu = (coll.get("price") or {}).get("usd"), (loan.get("price") or {}).get("usd")
+        if cu and lu:
+            dex_px = cu / lu
+        if oracle_px and dex_px:
+            gap = oracle_px / dex_px - 1
         self.g.add_node(Node(mid, "market", label, chain_id, m["marketId"], attrs={
             "lltv": lltv, "utilization": st.get("utilization"), "supply_usd": st.get("supplyAssetsUsd"),
             "borrow_usd": st.get("borrowAssetsUsd"), "liquidity_usd": st.get("liquidityAssetsUsd"),
             "collateral_usd": st.get("collateralAssetsUsd"), "supply_apy": st.get("supplyApy"),
             "borrow_apy": st.get("borrowApy"), "bad_debt_usd": (m.get("badDebt") or {}).get("usd"),
             "realized_bad_debt_usd": (m.get("realizedBadDebt") or {}).get("usd"), "age_days": age_days,
+            "oracle_price": oracle_px, "market_price": dex_px, "oracle_dex_gap": gap,
+            "daily_price_variation": st.get("dailyPriceVariation"),
             "subtitle": f"LLTV {lltv:.1%} - util {(st.get('utilization') or 0):.0%}",
             "url": f"https://app.morpho.org/market?id={m['marketId']}",
             "warnings": [w["type"] for w in m.get("warnings") or []],
@@ -174,6 +185,11 @@ class Discovery:
         if m.get("oracle"):
             oid = self.add_oracle(m["oracle"], chain_id, coll, st, age_days)
             self.link(mid, oid, "priced_by", Evidence("morpho-api", f"Oracle {short(m['oracle']['address'])} ({m['oracle']['type']})"))
+            if gap is not None:
+                self.g.nodes[oid].attrs.update({"oracle_price": oracle_px, "market_price": dex_px, "oracle_dex_gap": gap})
+                self.g.nodes[oid].evidence.append(Evidence(
+                    "morpho-api", f"Oracle price {oracle_px:,.6f} vs market price {dex_px:,.6f} {loan['symbol']} per "
+                                  f"{coll.get('symbol')} ({gap:+.2%})", ref="market.state.price"))
         else:
             self.warnings.append(f"Market {label} has no oracle data")
         return mid
