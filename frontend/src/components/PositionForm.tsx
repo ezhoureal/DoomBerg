@@ -3,6 +3,7 @@ import { Search, Loader2 } from "lucide-react";
 import { api } from "../api";
 import type { PositionKind, Preset } from "../types";
 import { CHAINS } from "../format";
+import { ROLE_LABELS, type PositionRole } from "../ui/workspace";
 
 type Req = {
   kind: PositionKind;
@@ -18,10 +19,12 @@ export default function PositionForm({
   onAnalyze,
   busy,
   initial,
+  initialRole = "entered",
 }: {
-  onAnalyze: (r: Req) => void;
+  onAnalyze: (r: Req, role: PositionRole) => void;
   busy: boolean;
   initial?: Req;
+  initialRole?: PositionRole;
 }) {
   const [kind, setKind] = useState<PositionKind>(initial?.kind ?? "market");
   const [address, setAddress] = useState(
@@ -33,6 +36,7 @@ export default function PositionForm({
   const [book, setBook] = useState(initial?.book_usd ?? 10_000_000);
   const [horizon, setHorizon] = useState(initial?.horizon_days ?? 30);
   const [presets, setPresets] = useState<Preset[]>([]);
+  const [role, setRole] = useState<PositionRole>(initialRole);
 
   useEffect(() => {
     api
@@ -102,7 +106,7 @@ export default function PositionForm({
       </div>
       <div className="row2">
         <label className="fld">
-          <span>Position size ($)</span>
+          <span>Entered position size ($)</span>
           <input
             type="number"
             value={size}
@@ -120,18 +124,38 @@ export default function PositionForm({
           />
         </label>
       </div>
+      <label className="fld">
+        <span>Position classification</span>
+        <select
+          value={role}
+          onChange={(e) => setRole(e.target.value as PositionRole)}
+        >
+          {Object.entries(ROLE_LABELS).map(([id, label]) => (
+            <option value={id} key={id}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="form-intro">
+        Sizes are entered manually. Declared holdings are user-reported, not
+        wallet-verified.
+      </p>
       <button
         className="btn primary"
         disabled={busy || !address}
         onClick={() =>
-          onAnalyze({
-            kind,
-            address,
-            chain_id: chain,
-            size_usd: size,
-            book_usd: book,
-            horizon_days: horizon,
-          })
+          onAnalyze(
+            {
+              kind,
+              address,
+              chain_id: chain,
+              size_usd: size,
+              book_usd: book,
+              horizon_days: horizon,
+            },
+            role,
+          )
         }
       >
         {busy ? <Loader2 className="spin" size={16} /> : <Search size={16} />}{" "}
@@ -151,14 +175,18 @@ export default function PositionForm({
               setAddress(p.address);
               setChain(p.chain_id);
               setSize(p.size_usd);
-              onAnalyze({
-                kind: p.kind,
-                address: p.address,
-                chain_id: p.chain_id,
-                size_usd: p.size_usd,
-                book_usd: book,
-                horizon_days: horizon,
-              });
+              setRole("example");
+              onAnalyze(
+                {
+                  kind: p.kind,
+                  address: p.address,
+                  chain_id: p.chain_id,
+                  size_usd: p.size_usd,
+                  book_usd: book,
+                  horizon_days: horizon,
+                },
+                "example",
+              );
             }}
           >
             <div>

@@ -30,6 +30,8 @@ import dagre from "@dagrejs/dagre";
 import "@xyflow/react/dist/style.css";
 import type { Analysis, GNode, ShockResult } from "../types";
 import { TYPE_META, lossColor, pct, riskColor } from "../format";
+import EvidenceBadge from "./EvidenceBadge";
+import { relationLabel, topologyKey } from "../ui/workspace";
 import {
   graphView,
   GROUPS,
@@ -38,7 +40,7 @@ import {
 } from "../ui/graphView";
 export type ColorMode = "risk" | "type";
 const W = 260,
-  H = 86;
+  H = 104;
 type DepData = {
   n: GNode;
   colorMode: ColorMode;
@@ -84,6 +86,7 @@ const DepNode = memo(({ data }: NodeProps<Node<DepData>>) => {
         {n.type === "group" && (
           <div className="dep-sub">{n.attrs.subtitle}</div>
         )}
+        {n.type !== "group" && <EvidenceBadge node={n} />}
       </div>
       <div
         className="dep-badge"
@@ -136,6 +139,7 @@ function layout(view: ViewGraph) {
 // View settings live in the workspace so they survive the graph unmounting while Results is open.
 export type GraphUi = {
   all: boolean;
+  labels: boolean;
   expanded: Set<GroupKey>;
   pathOnly: boolean;
   // "Reset view" collapses even the groups holding the selection or scenario, until either changes.
@@ -143,6 +147,7 @@ export type GraphUi = {
 };
 export const initialGraphUi: GraphUi = {
   all: false,
+  labels: false,
   expanded: new Set(),
   pathOnly: false,
   collapsedFor: null,
@@ -169,7 +174,7 @@ function Inner({
   const autoFit = useRef(true);
   const moveStart = useRef<Viewport | null>(null);
   const [fitRequest, setFitRequest] = useState(0);
-  const { all, expanded, pathOnly } = ui;
+  const { all, expanded, pathOnly, labels } = ui;
   const revealKey = `${selected}|${result?.shock.node_id}|${result?.shock.mode}`;
   const revealOn = ui.collapsedFor !== revealKey;
   const pathNodes = useMemo(
@@ -225,8 +230,25 @@ function Inner({
     [base, pathOnly, result, pathView],
   );
   // Re-layout only when the drawn graph changes, not on every selection.
-  const structure = `${view.nodes.map((n) => n.id).join(",")}|${view.edges.map((e) => e.id).join(",")}`;
+  const structure = topologyKey(view);
   const positions = useMemo(() => layout(view), [structure]);
+  // Highlight connections only when the selection is drawn; "Failure path"
+  // can hide it, and dimming everything around nothing helps no one.
+  const selectedId = selected ? shown(selected) : null;
+  const selectedVisible =
+    selectedId && view.nodes.some((n) => n.id === selectedId)
+      ? selectedId
+      : null;
+  const neighbours = useMemo(() => {
+    const ids = new Set(selectedVisible ? [selectedVisible] : []);
+    view.edges.forEach((e) => {
+      if (e.source === selectedVisible || e.target === selectedVisible) {
+        ids.add(e.source);
+        ids.add(e.target);
+      }
+    });
+    return ids;
+  }, [view, selectedVisible]);
   const lossOf = (n: GNode) => {
     if (!result) return null;
     const ids: string[] = n.type === "group" ? n.attrs.members : [n.id];
@@ -251,11 +273,25 @@ function Inner({
             onPath: pathView.has(n.id),
             isShock: !!result && shown(result.shock.node_id) === n.id,
             selected: !!selected && shown(selected) === n.id,
-            dim: !!result && !pathView.has(n.id) && (loss ?? 0) < 0.0001,
+            dim:
+              (!!selectedVisible &&
+                !neighbours.has(n.id) &&
+                !pathView.has(n.id)) ||
+              (!!result && !pathView.has(n.id) && (loss ?? 0) < 0.0001),
           },
         };
       }),
-    [view, positions, colorMode, result, pathView, shown, selected],
+    [
+      view,
+      positions,
+      colorMode,
+      result,
+      pathView,
+      shown,
+      selected,
+      selectedVisible,
+      neighbours,
+    ],
   );
   // React Flow keeps measured sizes and drag positions on the node objects it is given,
   // so carry them over when the data changes instead of handing it fresh nodes.
@@ -285,24 +321,34 @@ function Inner({
   );
   const edges: Edge[] = view.edges.map((e) => {
     const hot = pathEdges.has(`${e.source}>${e.target}`);
+    const connected =
+      e.source === selectedVisible || e.target === selectedVisible;
+    const color = hot ? "#b45345" : connected ? "#4e645d" : "#8b8780";
     return {
       id: e.id,
       source: e.source,
       target: e.target,
+      type: "smoothstep",
       animated: hot,
-      label: hot ? e.type.replace(/_/g, " ") : undefined,
-      labelStyle: { fill: "#9c342b", fontSize: 10 },
+      label: hot || connected || labels ? relationLabel(e.type) : undefined,
+      labelStyle: {
+        fill: hot ? "#9c342b" : "#4a4843",
+        fontSize: 11,
+        fontWeight: 500,
+      },
       labelBgStyle: { fill: "#fff", fillOpacity: 0.95 },
       labelBgPadding: [4, 2],
       style: {
-        stroke: hot ? "#b45345" : "#c9c5bd",
-        strokeWidth: hot ? 2 : 1.2,
+        stroke: color,
+        strokeWidth: hot || connected ? 2.4 : 1.8,
+        opacity: selectedVisible && !connected && !hot ? 0.3 : 1,
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        width: 14,
-        height: 14,
-        color: hot ? "#b45345" : "#c9c5bd",
+        width: 20,
+        height: 20,
+        markerUnits: "userSpaceOnUse",
+        color,
       },
     };
   });
@@ -350,6 +396,13 @@ function Inner({
           </button>
         )}
         <button
+          className={`tool-button ${labels ? "on" : ""}`}
+          aria-pressed={labels}
+          onClick={() => set({ labels: !labels })}
+        >
+          Connection labels
+        </button>
+        <button
           className="tool-button"
           onClick={() => {
             onUi({
@@ -364,11 +417,7 @@ function Inner({
           <RotateCcw size={13} />
           Reset view
         </button>
-        <button
-          className="tool-button"
-          onClick={fit}
-          title="Fit graph"
-        >
+        <button className="tool-button" onClick={fit} title="Fit graph">
           <Expand size={14} />
         </button>
       </div>
@@ -421,7 +470,7 @@ function Inner({
       <div className="graph-footer">
         <span>
           {view.nodes.length} visible / {analysis.stats.nodes} total · Arrows
-          mean “depends on”
+          mean “depends on” · Select a component to highlight connections
         </span>
         <details>
           <summary>Categories</summary>

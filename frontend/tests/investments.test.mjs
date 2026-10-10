@@ -8,7 +8,7 @@ import {
 
 const analysis = (id, kind = "market") => ({
   position_id: id,
-  request: { kind, chain_id: 1, size_usd: 1000000 },
+  request: { kind, address: "0xabc", chain_id: 1, size_usd: 1000000 },
   graph: {
     nodes: [
       { type: "market", label: `Market ${id}`, attrs: {} },
