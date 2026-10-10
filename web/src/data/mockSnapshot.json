@@ -1,0 +1,1480 @@
+{
+  "schemaVersion": "1.0",
+  "asOf": "2026-10-10T14:00:00Z",
+  "source": "mock",
+  "portfolio": {
+    "id": "belem-usd-mn",
+    "name": "Market-Neutral Stablecoin & SOL Book",
+    "manager": "Belem Capital",
+    "aumUsd": 400000000,
+    "baseCurrency": "USD"
+  },
+  "riskParams": {
+    "horizonDays": 30,
+    "watchRatio": 0.35,
+    "stressLossWatchPct": 4,
+    "concentrationPct": 40,
+    "utilizationWarn": 0.92,
+    "oracleDeviationWarnPct": 1,
+    "oracleDeviationCritPct": 2.5,
+    "pegDeviationWarnPct": 0.5,
+    "tvlShareWarn": 0.25,
+    "monteCarloSamples": 20000,
+    "varConfidence": 0.99
+  },
+  "positions": [
+    {
+      "id": "pos-steakhouse-usdc",
+      "label": "Steakhouse USDC (MetaMorpho)",
+      "chain": "ethereum",
+      "entryNodeId": "vault-steakhouse-usdc",
+      "valueUsd": 70000000,
+      "apr": 7.4,
+      "strategy": "USDC supplied to a curated Morpho vault",
+      "exit": {
+        "slippageBps": 2,
+        "fixedCostUsd": 150,
+        "availableLiquidityUsd": 41000000,
+        "timeToExitHours": 0.5,
+        "route": "Redeem vault shares -> USDC (limited by idle + withdrawable market liquidity)"
+      }
+    },
+    {
+      "id": "pos-pt-susde-loop",
+      "label": "PT-sUSDe 27NOV26 loop (Morpho)",
+      "chain": "ethereum",
+      "entryNodeId": "strat-pt-susde-loop",
+      "valueUsd": 40000000,
+      "apr": 18.2,
+      "strategy": "3x looped Pendle PT-sUSDe collateral, USDC debt on Morpho Blue",
+      "exit": {
+        "slippageBps": 160,
+        "fixedCostUsd": 2500,
+        "availableLiquidityUsd": 40000000,
+        "timeToExitHours": 6,
+        "route": "Flash-loan deleverage -> sell PT on Pendle AMM -> repay USDC"
+      }
+    },
+    {
+      "id": "pos-gauntlet-weth",
+      "label": "Gauntlet WETH Prime (MetaMorpho)",
+      "chain": "ethereum",
+      "entryNodeId": "vault-gauntlet-weth",
+      "valueUsd": 60000000,
+      "apr": 3.1,
+      "strategy": "WETH supplied to a curated Morpho vault (hedged with short ETH perp off-book)",
+      "exit": {
+        "slippageBps": 2,
+        "fixedCostUsd": 150,
+        "availableLiquidityUsd": 60000000,
+        "timeToExitHours": 0.5,
+        "route": "Redeem vault shares -> WETH"
+      }
+    },
+    {
+      "id": "pos-kamino-usdc",
+      "label": "Kamino Main Market USDC",
+      "chain": "solana",
+      "entryNodeId": "mkt-kamino-usdc",
+      "valueUsd": 70000000,
+      "apr": 8.9,
+      "strategy": "USDC lent on Kamino Lend main market",
+      "exit": {
+        "slippageBps": 1,
+        "fixedCostUsd": 5,
+        "availableLiquidityUsd": 38000000,
+        "timeToExitHours": 0.2,
+        "route": "Withdraw USDC reserve (limited by utilization)"
+      }
+    },
+    {
+      "id": "pos-jlp",
+      "label": "Jupiter JLP (delta-hedged)",
+      "chain": "solana",
+      "entryNodeId": "pool-jlp",
+      "valueUsd": 50000000,
+      "apr": 21.5,
+      "strategy": "Hold JLP, hedge SOL/ETH/BTC beta on Drift perps",
+      "exit": {
+        "slippageBps": 35,
+        "fixedCostUsd": 40,
+        "availableLiquidityUsd": 50000000,
+        "timeToExitHours": 1,
+        "route": "Redeem JLP -> USDC, close perp hedges"
+      }
+    },
+    {
+      "id": "pos-drift-basis",
+      "label": "Drift SOL basis vault",
+      "chain": "solana",
+      "entryNodeId": "vault-drift-basis",
+      "valueUsd": 50000000,
+      "apr": 14.0,
+      "strategy": "Vault deploying into Drift perps: long JitoSOL spot, short SOL-PERP",
+      "exit": {
+        "slippageBps": 25,
+        "fixedCostUsd": 20,
+        "availableLiquidityUsd": 50000000,
+        "timeToExitHours": 72,
+        "route": "Request vault withdrawal (3-day redemption period) -> USDC"
+      }
+    },
+    {
+      "id": "pos-jitosol",
+      "label": "JitoSOL (hedged)",
+      "chain": "solana",
+      "entryNodeId": "asset-jitosol",
+      "valueUsd": 60000000,
+      "apr": 7.8,
+      "strategy": "Hold JitoSOL, hedge SOL delta with short perp",
+      "exit": {
+        "slippageBps": 8,
+        "fixedCostUsd": 5,
+        "availableLiquidityUsd": 60000000,
+        "timeToExitHours": 0.2,
+        "route": "Swap JitoSOL -> SOL via Jupiter"
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "id": "chain-ethereum",
+      "type": "chain",
+      "label": "Ethereum L1",
+      "chain": "ethereum",
+      "description": "Settlement layer for all Morpho positions.",
+      "metrics": {
+        "outages12m": 0
+      },
+      "baseline": {
+        "pFail": 0.0003,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "chain-solana",
+      "type": "chain",
+      "label": "Solana",
+      "chain": "solana",
+      "description": "Settlement layer for Kamino, Jupiter, Drift and Jito.",
+      "metrics": {
+        "outages12m": 0
+      },
+      "baseline": {
+        "pFail": 0.002,
+        "lossGivenFailure": 0.15
+      }
+    },
+    {
+      "id": "bridge-wormhole",
+      "type": "bridge",
+      "label": "Wormhole (Portal)",
+      "chain": "offchain",
+      "description": "Guardian-set bridge backing wrapped ETH/BTC on Solana.",
+      "metrics": {
+        "tvlUsd": 2400000000
+      },
+      "baseline": {
+        "pFail": 0.003,
+        "lossGivenFailure": 0.9
+      }
+    },
+    {
+      "id": "proto-morpho-blue",
+      "type": "protocol",
+      "label": "Morpho Blue",
+      "chain": "ethereum",
+      "description": "Immutable isolated-market lending primitive.",
+      "metrics": {
+        "tvlUsd": 9800000000,
+        "audits": 25
+      },
+      "baseline": {
+        "pFail": 0.0008,
+        "lossGivenFailure": 0.8
+      }
+    },
+    {
+      "id": "proto-pendle",
+      "type": "protocol",
+      "label": "Pendle V2",
+      "chain": "ethereum",
+      "description": "Yield tokenization (PT/YT) and PT AMM.",
+      "metrics": {
+        "tvlUsd": 5200000000,
+        "audits": 12
+      },
+      "baseline": {
+        "pFail": 0.0015,
+        "lossGivenFailure": 0.7
+      }
+    },
+    {
+      "id": "proto-kamino-lend",
+      "type": "protocol",
+      "label": "Kamino Lend",
+      "chain": "solana",
+      "description": "Largest lending protocol on Solana.",
+      "metrics": {
+        "tvlUsd": 3100000000,
+        "tvlShareOfChain": 0.29,
+        "audits": 14
+      },
+      "baseline": {
+        "pFail": 0.0015,
+        "lossGivenFailure": 0.7
+      }
+    },
+    {
+      "id": "proto-jupiter-perps",
+      "type": "protocol",
+      "label": "Jupiter Perps",
+      "chain": "solana",
+      "description": "Pool-based perp exchange; JLP is the counterparty to traders.",
+      "metrics": {
+        "tvlUsd": 1900000000,
+        "tvlShareOfChain": 0.18,
+        "audits": 6
+      },
+      "baseline": {
+        "pFail": 0.002,
+        "lossGivenFailure": 0.6
+      }
+    },
+    {
+      "id": "proto-drift",
+      "type": "protocol",
+      "label": "Drift Protocol v2",
+      "chain": "solana",
+      "description": "Order-book perp + spot venue with vaults.",
+      "metrics": {
+        "tvlUsd": 900000000,
+        "tvlShareOfChain": 0.08,
+        "audits": 8
+      },
+      "baseline": {
+        "pFail": 0.0025,
+        "lossGivenFailure": 0.6
+      }
+    },
+    {
+      "id": "proto-jito-stake-pool",
+      "type": "protocol",
+      "label": "Jito Stake Pool",
+      "chain": "solana",
+      "description": "SPL stake pool behind JitoSOL.",
+      "metrics": {
+        "tvlUsd": 2700000000,
+        "tvlShareOfChain": 0.25,
+        "audits": 5
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.6
+      }
+    },
+    {
+      "id": "curator-steakhouse",
+      "type": "curator",
+      "label": "Steakhouse Financial",
+      "chain": "offchain",
+      "description": "Curator: sets caps and allocations for the USDC vault.",
+      "baseline": {
+        "pFail": 0.002,
+        "lossGivenFailure": 0.15
+      }
+    },
+    {
+      "id": "curator-gauntlet",
+      "type": "curator",
+      "label": "Gauntlet",
+      "chain": "offchain",
+      "description": "Curator: sets caps and allocations for the WETH vault.",
+      "baseline": {
+        "pFail": 0.002,
+        "lossGivenFailure": 0.15
+      }
+    },
+    {
+      "id": "curator-drift-vault-mgr",
+      "type": "curator",
+      "label": "Basis vault manager",
+      "chain": "offchain",
+      "description": "Delegate key trading the Drift vault.",
+      "baseline": {
+        "pFail": 0.004,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "vault-steakhouse-usdc",
+      "type": "vault",
+      "label": "Steakhouse USDC",
+      "chain": "ethereum",
+      "description": "MetaMorpho vault allocating USDC across Morpho markets.",
+      "metrics": {
+        "tvlUsd": 480000000
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.5
+      }
+    },
+    {
+      "id": "vault-gauntlet-weth",
+      "type": "vault",
+      "label": "Gauntlet WETH Prime",
+      "chain": "ethereum",
+      "description": "MetaMorpho vault allocating WETH to LST-collateral markets.",
+      "metrics": {
+        "tvlUsd": 310000000
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.5
+      }
+    },
+    {
+      "id": "vault-drift-basis",
+      "type": "vault",
+      "label": "Drift SOL basis vault",
+      "chain": "solana",
+      "description": "Vault deploying into a perp venue (Drift).",
+      "metrics": {
+        "tvlUsd": 120000000
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.5
+      }
+    },
+    {
+      "id": "pool-jlp",
+      "type": "vault",
+      "label": "JLP pool",
+      "chain": "solana",
+      "description": "Liquidity pool backing Jupiter Perps (SOL/ETH/WBTC/USDC/USDT).",
+      "metrics": {
+        "tvlUsd": 1500000000
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.4
+      }
+    },
+    {
+      "id": "strat-pt-susde-loop",
+      "type": "strategy",
+      "label": "PT-sUSDe loop (3x)",
+      "chain": "ethereum",
+      "description": "Supply PT-sUSDe on Morpho, borrow USDC, buy more PT. Liquidates if oracle PT price falls ~8%.",
+      "metrics": {
+        "leverage": 3,
+        "healthFactor": 1.09
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "mkt-morpho-pt-susde-usdc",
+      "type": "market",
+      "label": "PT-sUSDe-27NOV / USDC",
+      "chain": "ethereum",
+      "description": "Morpho Blue market, LLTV 91.5%.",
+      "metrics": {
+        "utilization": 0.95,
+        "lltv": 0.915,
+        "tvlUsd": 410000000
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.4
+      }
+    },
+    {
+      "id": "mkt-morpho-wsteth-usdc",
+      "type": "market",
+      "label": "wstETH / USDC",
+      "chain": "ethereum",
+      "description": "Morpho Blue market, LLTV 86%.",
+      "metrics": {
+        "utilization": 0.89,
+        "lltv": 0.86,
+        "tvlUsd": 620000000
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "mkt-morpho-wbtc-usdc",
+      "type": "market",
+      "label": "WBTC / USDC",
+      "chain": "ethereum",
+      "description": "Morpho Blue market, LLTV 86%.",
+      "metrics": {
+        "utilization": 0.9,
+        "lltv": 0.86,
+        "tvlUsd": 540000000
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "mkt-morpho-wsteth-weth",
+      "type": "market",
+      "label": "wstETH / WETH",
+      "chain": "ethereum",
+      "description": "Morpho Blue market, LLTV 94.5%.",
+      "metrics": {
+        "utilization": 0.91,
+        "lltv": 0.945,
+        "tvlUsd": 880000000
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "mkt-pendle-pt-susde",
+      "type": "market",
+      "label": "Pendle PT-sUSDe AMM",
+      "chain": "ethereum",
+      "description": "PT/SY AMM; source of PT price discovery and exit liquidity.",
+      "metrics": {
+        "tvlUsd": 290000000,
+        "depthUsd2pct": 22000000
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "mkt-kamino-usdc",
+      "type": "market",
+      "label": "Kamino USDC reserve",
+      "chain": "solana",
+      "description": "USDC reserve in Kamino main market, collateralised by SOL, LSTs and wrapped assets.",
+      "metrics": {
+        "utilization": 0.94,
+        "tvlUsd": 1100000000
+      },
+      "baseline": {
+        "pFail": 0.0008,
+        "lossGivenFailure": 0.4
+      }
+    },
+    {
+      "id": "mkt-drift-sol-perp",
+      "type": "market",
+      "label": "Drift SOL-PERP",
+      "chain": "solana",
+      "description": "Perp market where the basis vault holds its short.",
+      "metrics": {
+        "fundingRateApr": 95,
+        "depthUsd2pct": 14000000
+      },
+      "baseline": {
+        "pFail": 0.002,
+        "lossGivenFailure": 0.25
+      }
+    },
+    {
+      "id": "asset-usdc",
+      "type": "asset",
+      "label": "USDC",
+      "chain": "offchain",
+      "description": "Native USDC on Ethereum and Solana.",
+      "metrics": {
+        "pegDeviationPct": 0.0
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.15
+      }
+    },
+    {
+      "id": "asset-usdt",
+      "type": "asset",
+      "label": "USDT",
+      "chain": "offchain",
+      "metrics": {
+        "pegDeviationPct": -0.02
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.2
+      }
+    },
+    {
+      "id": "asset-usde",
+      "type": "asset",
+      "label": "USDe",
+      "chain": "ethereum",
+      "description": "Ethena synthetic dollar: staked ETH/BTC spot + short perps.",
+      "metrics": {
+        "pegDeviationPct": -0.65,
+        "fundingRateApr": -2.1
+      },
+      "baseline": {
+        "pFail": 0.004,
+        "lossGivenFailure": 0.2
+      }
+    },
+    {
+      "id": "asset-susde",
+      "type": "asset",
+      "label": "sUSDe",
+      "chain": "ethereum",
+      "description": "Staked USDe (yield-bearing, 7-day cooldown).",
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.2
+      }
+    },
+    {
+      "id": "asset-pt-susde",
+      "type": "asset",
+      "label": "PT-sUSDe-27NOV26",
+      "chain": "ethereum",
+      "description": "Pendle principal token; redeems 1:1 into sUSDe at maturity.",
+      "metrics": {
+        "pegDeviationPct": -0.4
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "asset-weth",
+      "type": "asset",
+      "label": "WETH",
+      "chain": "ethereum",
+      "baseline": {
+        "pFail": 0.0001,
+        "lossGivenFailure": 0.5
+      }
+    },
+    {
+      "id": "asset-wsteth",
+      "type": "asset",
+      "label": "wstETH",
+      "chain": "ethereum",
+      "description": "Lido wrapped staked ETH.",
+      "metrics": {
+        "pegDeviationPct": -0.05
+      },
+      "baseline": {
+        "pFail": 0.0008,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "asset-wbtc",
+      "type": "asset",
+      "label": "WBTC",
+      "chain": "ethereum",
+      "metrics": {
+        "pegDeviationPct": -0.1
+      },
+      "baseline": {
+        "pFail": 0.0015,
+        "lossGivenFailure": 0.6
+      }
+    },
+    {
+      "id": "asset-sol",
+      "type": "asset",
+      "label": "SOL",
+      "chain": "solana",
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "asset-jitosol",
+      "type": "asset",
+      "label": "JitoSOL",
+      "chain": "solana",
+      "description": "Liquid staking token of the Jito stake pool.",
+      "metrics": {
+        "pegDeviationPct": -0.08,
+        "depthUsd2pct": 95000000
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "asset-eth-wh",
+      "type": "asset",
+      "label": "ETH (Wormhole)",
+      "chain": "solana",
+      "metrics": {
+        "pegDeviationPct": -0.03
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "asset-wbtc-wh",
+      "type": "asset",
+      "label": "WBTC (Wormhole)",
+      "chain": "solana",
+      "metrics": {
+        "pegDeviationPct": -0.12
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "issuer-circle",
+      "type": "issuer",
+      "label": "Circle",
+      "chain": "offchain",
+      "description": "USDC issuer; reserves in T-bills and bank deposits.",
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.2
+      }
+    },
+    {
+      "id": "issuer-tether",
+      "type": "issuer",
+      "label": "Tether",
+      "chain": "offchain",
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.25
+      }
+    },
+    {
+      "id": "issuer-ethena",
+      "type": "issuer",
+      "label": "Ethena Labs",
+      "chain": "offchain",
+      "description": "Mints/redeems USDe; runs the delta-neutral hedge book.",
+      "metrics": {
+        "tvlUsd": 11000000000
+      },
+      "baseline": {
+        "pFail": 0.002,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "issuer-lido",
+      "type": "issuer",
+      "label": "Lido",
+      "chain": "ethereum",
+      "description": "Liquid staking protocol behind stETH.",
+      "metrics": {
+        "tvlUsd": 24000000000,
+        "tvlShareOfChain": 0.27
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.5
+      }
+    },
+    {
+      "id": "issuer-bitgo",
+      "type": "issuer",
+      "label": "BitGo / BiT Global",
+      "chain": "offchain",
+      "description": "WBTC custodian and merchant set.",
+      "baseline": {
+        "pFail": 0.0015,
+        "lossGivenFailure": 0.8
+      }
+    },
+    {
+      "id": "custodian-ethena-cex",
+      "type": "custodian",
+      "label": "Ethena hedge venues",
+      "chain": "offchain",
+      "description": "Off-exchange settlement (Copper, Ceffu) + Binance/Bybit/OKX short perps.",
+      "baseline": {
+        "pFail": 0.003,
+        "lossGivenFailure": 0.35
+      }
+    },
+    {
+      "id": "oracle-pt-susde",
+      "type": "oracle",
+      "label": "PT-sUSDe oracle",
+      "chain": "ethereum",
+      "description": "PT price = sUSDe/USD x PT-AMM TWAP. Single price-discovery venue.",
+      "metrics": {
+        "sourceCount": 1,
+        "deviationPct": 3.2,
+        "stalenessSec": 300,
+        "heartbeatSec": 900
+      },
+      "baseline": {
+        "pFail": 0.002,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "oracle-chainlink-steth",
+      "type": "oracle",
+      "label": "Chainlink wstETH/ETH",
+      "chain": "ethereum",
+      "metrics": {
+        "sourceCount": 16,
+        "deviationPct": 0.05,
+        "stalenessSec": 2400,
+        "heartbeatSec": 86400
+      },
+      "baseline": {
+        "pFail": 0.0005,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "oracle-chainlink-btc",
+      "type": "oracle",
+      "label": "Chainlink BTC/USD",
+      "chain": "ethereum",
+      "metrics": {
+        "sourceCount": 31,
+        "deviationPct": 0.04,
+        "stalenessSec": 600,
+        "heartbeatSec": 3600
+      },
+      "baseline": {
+        "pFail": 0.0003,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "oracle-pyth",
+      "type": "oracle",
+      "label": "Pyth Network",
+      "chain": "solana",
+      "description": "Pull oracle; publishers aggregated on Pythnet, relayed via Wormhole.",
+      "metrics": {
+        "sourceCount": 40,
+        "deviationPct": 0.08,
+        "stalenessSec": 2,
+        "heartbeatSec": 60
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "oracle-switchboard",
+      "type": "oracle",
+      "label": "Switchboard",
+      "chain": "solana",
+      "metrics": {
+        "sourceCount": 8,
+        "deviationPct": 0.1,
+        "stalenessSec": 5,
+        "heartbeatSec": 60
+      },
+      "baseline": {
+        "pFail": 0.0015,
+        "lossGivenFailure": 0.3
+      }
+    },
+    {
+      "id": "oracle-kamino-scope",
+      "type": "oracle",
+      "label": "Kamino Scope",
+      "chain": "solana",
+      "description": "Kamino's oracle aggregator (Pyth primary, Switchboard fallback).",
+      "metrics": {
+        "sourceCount": 2,
+        "deviationPct": 0.06,
+        "stalenessSec": 10,
+        "heartbeatSec": 120
+      },
+      "baseline": {
+        "pFail": 0.001,
+        "lossGivenFailure": 0.3
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "vault-steakhouse-usdc",
+      "to": "curator-steakhouse",
+      "kind": "managed_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "vault-steakhouse-usdc",
+      "to": "mkt-morpho-pt-susde-usdc",
+      "kind": "allocates_to",
+      "exposure": 0.35,
+      "transmission": 1,
+      "note": "35% allocation"
+    },
+    {
+      "from": "vault-steakhouse-usdc",
+      "to": "mkt-morpho-wsteth-usdc",
+      "kind": "allocates_to",
+      "exposure": 0.4,
+      "transmission": 1,
+      "note": "40% allocation"
+    },
+    {
+      "from": "vault-steakhouse-usdc",
+      "to": "mkt-morpho-wbtc-usdc",
+      "kind": "allocates_to",
+      "exposure": 0.25,
+      "transmission": 1,
+      "note": "25% allocation"
+    },
+    {
+      "from": "vault-gauntlet-weth",
+      "to": "curator-gauntlet",
+      "kind": "managed_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "vault-gauntlet-weth",
+      "to": "mkt-morpho-wsteth-weth",
+      "kind": "allocates_to",
+      "exposure": 1,
+      "transmission": 1,
+      "note": "100% allocation"
+    },
+    {
+      "from": "mkt-morpho-pt-susde-usdc",
+      "to": "proto-morpho-blue",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-morpho-pt-susde-usdc",
+      "to": "asset-pt-susde",
+      "kind": "collateral",
+      "exposure": 1,
+      "transmission": 0.35,
+      "note": "lender loses only beyond LTV buffer + liquidation failure"
+    },
+    {
+      "from": "mkt-morpho-pt-susde-usdc",
+      "to": "oracle-pt-susde",
+      "kind": "priced_by",
+      "exposure": 1,
+      "transmission": 0.4,
+      "note": "mispriced oracle -> bad debt or missed liquidations"
+    },
+    {
+      "from": "mkt-morpho-pt-susde-usdc",
+      "to": "asset-usdc",
+      "kind": "loan_asset",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-morpho-wsteth-usdc",
+      "to": "proto-morpho-blue",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-morpho-wsteth-usdc",
+      "to": "asset-wsteth",
+      "kind": "collateral",
+      "exposure": 1,
+      "transmission": 0.25
+    },
+    {
+      "from": "mkt-morpho-wsteth-usdc",
+      "to": "oracle-chainlink-steth",
+      "kind": "priced_by",
+      "exposure": 1,
+      "transmission": 0.5
+    },
+    {
+      "from": "mkt-morpho-wsteth-usdc",
+      "to": "asset-usdc",
+      "kind": "loan_asset",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-morpho-wbtc-usdc",
+      "to": "proto-morpho-blue",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-morpho-wbtc-usdc",
+      "to": "asset-wbtc",
+      "kind": "collateral",
+      "exposure": 1,
+      "transmission": 0.3
+    },
+    {
+      "from": "mkt-morpho-wbtc-usdc",
+      "to": "oracle-chainlink-btc",
+      "kind": "priced_by",
+      "exposure": 1,
+      "transmission": 0.5
+    },
+    {
+      "from": "mkt-morpho-wbtc-usdc",
+      "to": "asset-usdc",
+      "kind": "loan_asset",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-morpho-wsteth-weth",
+      "to": "proto-morpho-blue",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-morpho-wsteth-weth",
+      "to": "asset-wsteth",
+      "kind": "collateral",
+      "exposure": 1,
+      "transmission": 0.3
+    },
+    {
+      "from": "mkt-morpho-wsteth-weth",
+      "to": "oracle-chainlink-steth",
+      "kind": "priced_by",
+      "exposure": 1,
+      "transmission": 0.5
+    },
+    {
+      "from": "mkt-morpho-wsteth-weth",
+      "to": "asset-weth",
+      "kind": "loan_asset",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "strat-pt-susde-loop",
+      "to": "proto-morpho-blue",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "strat-pt-susde-loop",
+      "to": "asset-pt-susde",
+      "kind": "holds",
+      "exposure": 1,
+      "transmission": 3,
+      "note": "3x leverage on PT price"
+    },
+    {
+      "from": "strat-pt-susde-loop",
+      "to": "oracle-pt-susde",
+      "kind": "priced_by",
+      "exposure": 1,
+      "transmission": 1.5,
+      "note": "oracle drop below LLTV triggers liquidation of the whole loop"
+    },
+    {
+      "from": "strat-pt-susde-loop",
+      "to": "mkt-pendle-pt-susde",
+      "kind": "exit_liquidity",
+      "exposure": 1,
+      "transmission": 0.3,
+      "note": "deleverage sells PT into this AMM"
+    },
+    {
+      "from": "asset-pt-susde",
+      "to": "proto-pendle",
+      "kind": "issued_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-pt-susde",
+      "to": "asset-susde",
+      "kind": "underlying",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "oracle-pt-susde",
+      "to": "mkt-pendle-pt-susde",
+      "kind": "oracle_source",
+      "exposure": 1,
+      "transmission": 1,
+      "note": "TWAP from single AMM"
+    },
+    {
+      "from": "oracle-pt-susde",
+      "to": "asset-susde",
+      "kind": "oracle_source",
+      "exposure": 1,
+      "transmission": 0.5,
+      "note": "sUSDe/USD leg (hardcoded USDe=1)"
+    },
+    {
+      "from": "mkt-pendle-pt-susde",
+      "to": "proto-pendle",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "proto-pendle",
+      "to": "chain-ethereum",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-susde",
+      "to": "asset-usde",
+      "kind": "underlying",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-usde",
+      "to": "issuer-ethena",
+      "kind": "issued_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-usde",
+      "to": "chain-ethereum",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "issuer-ethena",
+      "to": "custodian-ethena-cex",
+      "kind": "hedged_on",
+      "exposure": 0.8,
+      "transmission": 1,
+      "note": "~80% of backing hedged on CEX perps via OES custodians"
+    },
+    {
+      "from": "issuer-ethena",
+      "to": "asset-usdt",
+      "kind": "holds",
+      "exposure": 0.15,
+      "transmission": 1,
+      "note": "liquid stables in reserve"
+    },
+    {
+      "from": "proto-morpho-blue",
+      "to": "chain-ethereum",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-usdc",
+      "to": "issuer-circle",
+      "kind": "issued_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-usdt",
+      "to": "issuer-tether",
+      "kind": "issued_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-wsteth",
+      "to": "issuer-lido",
+      "kind": "issued_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-wsteth",
+      "to": "asset-weth",
+      "kind": "underlying",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "issuer-lido",
+      "to": "chain-ethereum",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-weth",
+      "to": "chain-ethereum",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-wbtc",
+      "to": "issuer-bitgo",
+      "kind": "issued_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "oracle-chainlink-steth",
+      "to": "chain-ethereum",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "oracle-chainlink-btc",
+      "to": "chain-ethereum",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-kamino-usdc",
+      "to": "proto-kamino-lend",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-kamino-usdc",
+      "to": "asset-usdc",
+      "kind": "loan_asset",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-kamino-usdc",
+      "to": "oracle-kamino-scope",
+      "kind": "priced_by",
+      "exposure": 1,
+      "transmission": 0.5
+    },
+    {
+      "from": "mkt-kamino-usdc",
+      "to": "asset-sol",
+      "kind": "collateral",
+      "exposure": 0.4,
+      "transmission": 0.25,
+      "note": "40% of borrows backed by SOL"
+    },
+    {
+      "from": "mkt-kamino-usdc",
+      "to": "asset-jitosol",
+      "kind": "collateral",
+      "exposure": 0.35,
+      "transmission": 0.3,
+      "note": "35% backed by JitoSOL"
+    },
+    {
+      "from": "mkt-kamino-usdc",
+      "to": "asset-eth-wh",
+      "kind": "collateral",
+      "exposure": 0.1,
+      "transmission": 0.3
+    },
+    {
+      "from": "mkt-kamino-usdc",
+      "to": "asset-wbtc-wh",
+      "kind": "collateral",
+      "exposure": 0.15,
+      "transmission": 0.3
+    },
+    {
+      "from": "proto-kamino-lend",
+      "to": "chain-solana",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "oracle-kamino-scope",
+      "to": "oracle-pyth",
+      "kind": "oracle_source",
+      "exposure": 0.8,
+      "transmission": 1
+    },
+    {
+      "from": "oracle-kamino-scope",
+      "to": "oracle-switchboard",
+      "kind": "oracle_source",
+      "exposure": 0.2,
+      "transmission": 1
+    },
+    {
+      "from": "oracle-pyth",
+      "to": "bridge-wormhole",
+      "kind": "bridged_via",
+      "exposure": 1,
+      "transmission": 0.3,
+      "note": "price updates relayed via Wormhole"
+    },
+    {
+      "from": "oracle-pyth",
+      "to": "chain-solana",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "oracle-switchboard",
+      "to": "chain-solana",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "pool-jlp",
+      "to": "proto-jupiter-perps",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "pool-jlp",
+      "to": "oracle-pyth",
+      "kind": "priced_by",
+      "exposure": 1,
+      "transmission": 0.7,
+      "note": "bad prints let traders drain the pool"
+    },
+    {
+      "from": "pool-jlp",
+      "to": "asset-sol",
+      "kind": "holds",
+      "exposure": 0.44,
+      "transmission": 1
+    },
+    {
+      "from": "pool-jlp",
+      "to": "asset-eth-wh",
+      "kind": "holds",
+      "exposure": 0.1,
+      "transmission": 1
+    },
+    {
+      "from": "pool-jlp",
+      "to": "asset-wbtc-wh",
+      "kind": "holds",
+      "exposure": 0.11,
+      "transmission": 1
+    },
+    {
+      "from": "pool-jlp",
+      "to": "asset-usdc",
+      "kind": "holds",
+      "exposure": 0.26,
+      "transmission": 1
+    },
+    {
+      "from": "pool-jlp",
+      "to": "asset-usdt",
+      "kind": "holds",
+      "exposure": 0.09,
+      "transmission": 1
+    },
+    {
+      "from": "pool-jlp",
+      "to": "proto-drift",
+      "kind": "hedged_on",
+      "exposure": 0.6,
+      "transmission": 0.5,
+      "note": "beta hedge lives on Drift"
+    },
+    {
+      "from": "proto-jupiter-perps",
+      "to": "chain-solana",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "vault-drift-basis",
+      "to": "curator-drift-vault-mgr",
+      "kind": "managed_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "vault-drift-basis",
+      "to": "proto-drift",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "vault-drift-basis",
+      "to": "mkt-drift-sol-perp",
+      "kind": "hedged_on",
+      "exposure": 1,
+      "transmission": 0.4,
+      "note": "short leg: funding flips / ADL"
+    },
+    {
+      "from": "vault-drift-basis",
+      "to": "asset-jitosol",
+      "kind": "holds",
+      "exposure": 1,
+      "transmission": 1,
+      "note": "long spot leg"
+    },
+    {
+      "from": "mkt-drift-sol-perp",
+      "to": "proto-drift",
+      "kind": "deployed_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "mkt-drift-sol-perp",
+      "to": "oracle-pyth",
+      "kind": "priced_by",
+      "exposure": 1,
+      "transmission": 0.6
+    },
+    {
+      "from": "proto-drift",
+      "to": "chain-solana",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-jitosol",
+      "to": "proto-jito-stake-pool",
+      "kind": "issued_by",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-jitosol",
+      "to": "asset-sol",
+      "kind": "underlying",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "proto-jito-stake-pool",
+      "to": "chain-solana",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-sol",
+      "to": "chain-solana",
+      "kind": "settles_on",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-eth-wh",
+      "to": "bridge-wormhole",
+      "kind": "bridged_via",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-eth-wh",
+      "to": "asset-weth",
+      "kind": "underlying",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-wbtc-wh",
+      "to": "bridge-wormhole",
+      "kind": "bridged_via",
+      "exposure": 1,
+      "transmission": 1
+    },
+    {
+      "from": "asset-wbtc-wh",
+      "to": "asset-wbtc",
+      "kind": "underlying",
+      "exposure": 1,
+      "transmission": 1
+    }
+  ],
+  "incidents": [
+    {
+      "id": "inc-001",
+      "nodeId": "oracle-pt-susde",
+      "kind": "oracle_deviation",
+      "severity": "high",
+      "title": "PT-sUSDe oracle 3.2% above AMM price",
+      "description": "Oracle reports 0.982 while the Pendle AMM trades at 0.951 after a large PT sell-off. If the TWAP catches up, loops near 1.09 HF are liquidated; lenders face bad debt if liquidations clear below debt.",
+      "detectedAt": "2026-10-10T12:41:00Z",
+      "status": "active",
+      "pFail": 0.18,
+      "lossGivenFailure": 0.35,
+      "source": "oracle-deviation monitor"
+    },
+    {
+      "id": "inc-002",
+      "nodeId": "asset-usde",
+      "kind": "depeg",
+      "severity": "medium",
+      "title": "USDe trading at 0.9935 on Curve",
+      "description": "Funding negative for 3 consecutive days (-2.1% APR); redemptions elevated. Reserve fund covers ~11 days at current funding.",
+      "detectedAt": "2026-10-09T22:10:00Z",
+      "status": "active",
+      "pFail": 0.06,
+      "lossGivenFailure": 0.2,
+      "source": "peg monitor"
+    },
+    {
+      "id": "inc-003",
+      "nodeId": "oracle-pyth",
+      "kind": "outage",
+      "severity": "low",
+      "title": "Pyth publisher latency spike",
+      "description": "Median update latency rose to 4s for 25 minutes on SOL/USD. Resolved.",
+      "detectedAt": "2026-10-08T03:15:00Z",
+      "status": "resolved",
+      "pFail": 0.02,
+      "lossGivenFailure": 0.3,
+      "source": "oracle-liveness monitor"
+    },
+    {
+      "id": "inc-004",
+      "nodeId": "mkt-drift-sol-perp",
+      "kind": "market_dislocation",
+      "severity": "medium",
+      "title": "SOL-PERP open interest +60% in 24h, funding spiking",
+      "description": "Long OI surged after a listing rumour; funding at +95% APR. A sharp reversal could trigger auto-deleveraging of profitable shorts and insurance-fund drawdown.",
+      "detectedAt": "2026-10-10T09:05:00Z",
+      "status": "active",
+      "pFail": 0.02,
+      "lossGivenFailure": 0.25,
+      "source": "perp-venue monitor"
+    }
+  ]
+}
