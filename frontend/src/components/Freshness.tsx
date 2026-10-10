@@ -1,14 +1,25 @@
+import { useEffect, useState } from "react";
 import { ageLabel, refreshSuggested } from "../ui/workspace";
+
+// Each label keeps its own clock, so the age ticking over re-renders only the
+// label instead of every workspace.
+function useNow(intervalMs: number) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
 
 export default function Freshness({
   refreshedAt,
   needsRefresh,
-  now,
 }: {
   refreshedAt: string;
   needsRefresh: boolean;
-  now: number;
 }) {
+  const now = useNow(30_000);
   return (
     <span
       className={`freshness ${needsRefresh || refreshSuggested(refreshedAt, now) ? "needs-refresh" : ""}`}

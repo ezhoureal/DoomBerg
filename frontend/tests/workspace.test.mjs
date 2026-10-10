@@ -11,7 +11,11 @@ import {
   HISTORY_LIMIT,
   newWorkspaceId,
 } from "../src/ui/workspace.ts";
-import { restoreWorkspace, serializeWorkspace } from "../src/ui/storage.ts";
+import {
+  parseWorkspace,
+  restoreWorkspace,
+  serializeWorkspace,
+} from "../src/ui/storage.ts";
 import {
   emptyInvestments,
   investmentsReducer as reduce,
@@ -27,11 +31,11 @@ const node = (sources = ["rpc"], unverified = false) => ({
   evidence: sources.map((source) => ({ source, detail: "Discovery evidence" })),
   modes: [{ id: "stale", label: "Stale price" }],
 });
-const analysis = (id = "server-a") => ({
+const analysis = (id = "server-a", address = "0x123") => ({
   position_id: id,
   request: {
     kind: "market",
-    address: "0x123",
+    address,
     chain_id: 1,
     size_usd: 1000000,
     book_usd: 10000000,
@@ -166,19 +170,106 @@ test("restoring retains inputs, roles and scenario snapshots but invalidates bac
   assert.deepEqual(restoreWorkspace(null), emptyInvestments);
 });
 
-test("invalid saved workspaces fail safely rather than rendering broken dependencies", () => {
+test("unreadable saved workspaces fail, and invalid records are skipped individually", () => {
   assert.throws(() => restoreWorkspace("broken json"));
-  const saved = JSON.parse(serializeWorkspace(opened()));
+  const saved = JSON.parse(
+    serializeWorkspace(
+      reduce(
+        reduce(opened(), { type: "scenario", id: "tab-a", record: scenario() }),
+        { type: "open", id: "tab-b", analysis: analysis("server-b") },
+      ),
+    ),
+  );
   assert.throws(() =>
     restoreWorkspace(JSON.stringify({ ...saved, version: 9 })),
   );
-  assert.throws(() =>
-    restoreWorkspace(
-      JSON.stringify({ ...saved, items: [...saved.items, ...saved.items] }),
-    ),
+  const duplicated = parseWorkspace(
+    JSON.stringify({ ...saved, items: [...saved.items, saved.items[0]] }),
   );
-  saved.items[0].analysis.graph.nodes[0].evidence = null;
-  assert.throws(() => restoreWorkspace(JSON.stringify(saved)));
+  assert.deepEqual(
+    duplicated.state.items.map((item) => item.id),
+    ["tab-a", "tab-b"],
+  );
+  assert.equal(duplicated.skipped, 1);
+  const broken = structuredClone(saved);
+  broken.items[1].analysis.graph.nodes[0].evidence = null;
+  broken.items[0].history.push({ ...broken.items[0].history[0], id: 7 });
+  const partial = parseWorkspace(JSON.stringify(broken));
+  assert.deepEqual(
+    partial.state.items.map((item) => item.id),
+    ["tab-a"],
+  );
+  assert.equal(partial.state.items[0].history.length, 1);
+  assert.equal(partial.skipped, 2);
+});
+
+test("changing a tab to a different position clears its scenario history", () => {
+  let state = reduce(opened(), {
+    type: "scenario",
+    id: "tab-a",
+    record: scenario(),
+  });
+  state = reduce(state, {
+    type: "analysis",
+    id: "tab-a",
+    analysis: { ...analysis("server-b"), request: { ...analysis().request, address: "0X123", size_usd: 5 } },
+  });
+  assert.equal(state.items[0].history.length, 1, "same position, new size");
+  state = reduce(state, {
+    type: "analysis",
+    id: "tab-a",
+    analysis: analysis("server-c", "0x456"),
+  });
+  assert.deepEqual(state.items[0].history, []);
+});
+
+test("merging another browser tab's save adds its work, drops its closed tabs and ignores echoes", () => {
+  const record = (id, createdAt) => ({ ...scenario(id), createdAt });
+  let mine = reduce(opened("tab-a"), {
+    type: "scenario",
+    id: "tab-a",
+    record: record("run-mine", "2026-10-10T12:01:00.000Z"),
+  });
+  mine = reduce(mine, { type: "open", id: "tab-c", analysis: analysis() });
+  const theirs = reduce(
+    reduce(opened("tab-a"), {
+      type: "scenario",
+      id: "tab-a",
+      record: record("run-theirs", "2026-10-10T12:02:00.000Z"),
+    }),
+    { type: "open", id: "tab-b", analysis: analysis("server-b") },
+  );
+  const merged = reduce(mine, {
+    type: "merge",
+    items: theirs.items,
+    closed: ["tab-c"],
+  });
+  assert.deepEqual(
+    merged.items.map((item) => item.id),
+    ["tab-a", "tab-b"],
+  );
+  assert.equal(merged.activeId, "tab-a");
+  assert.deepEqual(
+    merged.items[0].history.map((r) => r.id),
+    ["run-theirs", "run-mine"],
+  );
+  assert.equal(
+    reduce(merged, { type: "merge", items: merged.items, closed: [] }),
+    merged,
+  );
+  const otherPosition = reduce(merged, {
+    type: "merge",
+    items: [
+      {
+        ...merged.items[0],
+        history: [
+          { ...record("run-other", timestamp), request: analysis("x", "0x9").request },
+        ],
+      },
+    ],
+    closed: [],
+  });
+  assert.equal(otherPosition, merged);
 });
 
 test("scenario callbacks remain attached to their original tab and history survives a refreshed analysis", () => {

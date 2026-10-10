@@ -24,6 +24,7 @@ import { CHAINS, pct, usd } from "../format";
 import {
   ROLE_LABELS,
   newWorkspaceId,
+  samePosition,
   type PositionRole,
   type ScenarioRecord,
 } from "../ui/workspace";
@@ -47,8 +48,9 @@ export default function InvestmentWorkspace({
   onScenario,
   onInvalid,
   onOverview,
-  now,
   saveError,
+  notice,
+  onDismissNotice,
 }: {
   initialAnalysis: Analysis | null;
   catalog: Catalog | null;
@@ -69,8 +71,9 @@ export default function InvestmentWorkspace({
   onScenario: (record: ScenarioRecord) => void;
   onInvalid: () => void;
   onOverview: () => void;
-  now: number;
   saveError: string | null;
+  notice: string | null;
+  onDismissNotice: () => void;
 }) {
   const [analysis, setAnalysis] = useState<Analysis | null>(initialAnalysis);
   const [record, setRecord] = useState<ScenarioRecord | null>(
@@ -108,6 +111,10 @@ export default function InvestmentWorkspace({
     setError(null);
     try {
       const next = await api.analyze(req);
+      // Saved runs for a different market or token don't apply to this one;
+      // the reducer clears this tab's history for the same reason.
+      if (analysis && !samePosition(analysis.request, next.request))
+        setRecord(null);
       setAnalysis(next);
       onAnalysis(next, nextRole, new Date().toISOString());
       setSelected(null);
@@ -313,6 +320,14 @@ export default function InvestmentWorkspace({
             {saveError}
           </div>
         )}
+        {notice && !saveError && (
+          <div className="error-banner" role="status">
+            {notice}
+            <button aria-label="Dismiss notice" onClick={onDismissNotice}>
+              <X size={15} />
+            </button>
+          </div>
+        )}
         {error && !positionOpen && (
           <div className="error-banner" role="alert">
             {error}
@@ -380,7 +395,6 @@ export default function InvestmentWorkspace({
                   <Freshness
                     refreshedAt={refreshedAt}
                     needsRefresh={needsRefresh}
-                    now={now}
                   />
                 </div>
               </div>

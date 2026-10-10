@@ -1,6 +1,7 @@
 import type { Analysis } from "../types.ts";
 import {
   HISTORY_LIMIT,
+  samePosition,
   type PositionRole,
   type ScenarioRecord,
 } from "./workspace.ts";
@@ -34,7 +35,10 @@ export type InvestmentsAction =
     }
   | { type: "scenario"; id: string; record: ScenarioRecord }
   | { type: "invalid"; id: string }
-  | { type: "busy"; id: string; busy: boolean };
+  | { type: "busy"; id: string; busy: boolean }
+  // Another browser tab saved the workspace: add its investments and scenario
+  // runs, and drop investments closed there.
+  | { type: "merge"; items: Investment[]; closed: string[] };
 
 export const emptyInvestments: InvestmentsState = { items: [], activeId: null };
 
@@ -59,6 +63,7 @@ export function investmentsReducer(
       activeId: action.id,
     };
   }
+  if (action.type === "merge") return merge(state, action.items, action.closed);
   const index = state.items.findIndex((item) => item.id === action.id);
   // A completed request must never recreate a tab the user has closed.
   if (index === -1) return state;
@@ -91,6 +96,10 @@ export function investmentsReducer(
           role: action.role ?? item.role,
           refreshedAt: action.refreshedAt ?? new Date().toISOString(),
           needsRefresh: false,
+          // Runs from a different market or token don't describe this one.
+          history: samePosition(item.analysis.request, action.analysis.request)
+            ? item.history
+            : [],
         };
       if (action.type === "scenario")
         return {
@@ -104,6 +113,59 @@ export function investmentsReducer(
       return { ...item, busy: action.busy };
     }),
   };
+}
+
+function merge(
+  state: InvestmentsState,
+  incoming: Investment[],
+  closed: string[],
+): InvestmentsState {
+  const gone = new Set(closed);
+  const theirs = new Map(incoming.map((item) => [item.id, item]));
+  let changed = false;
+  const items: Investment[] = [];
+  for (const item of state.items) {
+    if (gone.has(item.id) && !item.busy) {
+      changed = true;
+      continue;
+    }
+    const other = theirs.get(item.id);
+    const history = other ? mergeHistory(item, other.history) : item.history;
+    if (history !== item.history) changed = true;
+    items.push(history === item.history ? item : { ...item, history });
+  }
+  for (const other of incoming)
+    if (!gone.has(other.id) && !state.items.some((i) => i.id === other.id)) {
+      items.push(other);
+      changed = true;
+    }
+  if (!changed) return state;
+  return {
+    items,
+    activeId: items.some((item) => item.id === state.activeId)
+      ? state.activeId
+      : (items[0]?.id ?? null),
+  };
+}
+
+// Union of both tabs' runs for this position, newest first. Returns the
+// existing array when nothing is new, so merging an echo changes nothing.
+function mergeHistory(
+  item: Investment,
+  theirs: ScenarioRecord[],
+): ScenarioRecord[] {
+  const known = new Set(item.history.map((r) => r.id));
+  const added = theirs.filter(
+    (r) =>
+      !known.has(r.id) && samePosition(r.request, item.analysis.request),
+  );
+  const merged = [...item.history, ...added]
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    .slice(0, HISTORY_LIMIT);
+  return merged.every((r, i) => r === item.history[i]) &&
+    merged.length === item.history.length
+    ? item.history
+    : merged;
 }
 
 export function investmentLabel(analysis: Analysis): string {

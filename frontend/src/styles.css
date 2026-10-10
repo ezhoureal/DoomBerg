@@ -386,14 +386,12 @@ p {
   letter-spacing: 0;
   color: var(--dim);
 }
-.workspace-tabs,
 .result-tabs {
   display: flex;
   gap: 20px;
   border-bottom: 1px solid var(--line);
   margin: 0 30px;
 }
-.workspace-tabs button,
 .result-tabs button {
   display: flex;
   align-items: center;
@@ -405,7 +403,6 @@ p {
   font-size: 12px;
   color: var(--muted);
 }
-.workspace-tabs button.active,
 .result-tabs button.active {
   color: var(--text);
   border-bottom-color: #373a33;
@@ -1788,9 +1785,6 @@ p {
   }
   .summary-strip {
     margin: 0 16px 16px;
-  }
-  .workspace-tabs {
-    margin: 0 16px;
   }
   .research-area,
   .answer {

@@ -232,7 +232,13 @@ function Inner({
   // Re-layout only when the drawn graph changes, not on every selection.
   const structure = topologyKey(view);
   const positions = useMemo(() => layout(view), [structure]);
-  const selectedVisible = selected ? shown(selected) : null;
+  // Highlight connections only when the selection is drawn; "Failure path"
+  // can hide it, and dimming everything around nothing helps no one.
+  const selectedId = selected ? shown(selected) : null;
+  const selectedVisible =
+    selectedId && view.nodes.some((n) => n.id === selectedId)
+      ? selectedId
+      : null;
   const neighbours = useMemo(() => {
     const ids = new Set(selectedVisible ? [selectedVisible] : []);
     view.edges.forEach((e) => {
@@ -268,12 +274,24 @@ function Inner({
             isShock: !!result && shown(result.shock.node_id) === n.id,
             selected: !!selected && shown(selected) === n.id,
             dim:
-              (!!selected && !neighbours.has(n.id) && !pathView.has(n.id)) ||
+              (!!selectedVisible &&
+                !neighbours.has(n.id) &&
+                !pathView.has(n.id)) ||
               (!!result && !pathView.has(n.id) && (loss ?? 0) < 0.0001),
           },
         };
       }),
-    [view, positions, colorMode, result, pathView, shown, selected, neighbours],
+    [
+      view,
+      positions,
+      colorMode,
+      result,
+      pathView,
+      shown,
+      selected,
+      selectedVisible,
+      neighbours,
+    ],
   );
   // React Flow keeps measured sizes and drag positions on the node objects it is given,
   // so carry them over when the data changes instead of handing it fresh nodes.
@@ -323,7 +341,7 @@ function Inner({
       style: {
         stroke: color,
         strokeWidth: hot || connected ? 2.4 : 1.8,
-        opacity: selected && !connected && !hot ? 0.3 : 1,
+        opacity: selectedVisible && !connected && !hot ? 0.3 : 1,
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
