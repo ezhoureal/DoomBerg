@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -25,8 +25,8 @@ import {
   type ViewGraph,
 } from "../ui/graphView";
 export type ColorMode = "risk" | "type";
-const W = 220,
-  H = 66;
+const W = 260,
+  H = 86;
 type DepData = {
   n: GNode;
   colorMode: ColorMode;
@@ -54,7 +54,7 @@ const DepNode = memo(({ data }: NodeProps<Node<DepData>>) => {
           : meta.color;
   return (
     <div
-      className={`dep-node ${n.type === "group" ? "group-node" : ""} ${selected ? "sel" : ""} ${onPath ? "path" : ""} ${isShock ? "shock" : ""}`}
+      className={`dep-node ${n.type === "group" ? "group-node" : ""} ${selected ? "graph-selected" : ""} ${onPath ? "on-failure-path" : ""} ${isShock ? "shock" : ""}`}
       style={{ ["--accent" as any]: accent, opacity: dim ? 0.42 : 1 }}
     >
       <Handle type="target" position={Position.Left} className="h" />
@@ -127,9 +127,11 @@ function Inner({
   selected,
   onSelect,
   colorMode,
-  fitKey,
+  active = true,
 }: Props) {
   const rf = useReactFlow();
+  const fitted = useRef<{ positionId: string; request: number } | null>(null);
+  const [fitRequest, setFitRequest] = useState(0);
   const [all, setAll] = useState(false);
   const [expanded, setExpanded] = useState<Set<GroupKey>>(new Set());
   const [pathOnly, setPathOnly] = useState(false);
@@ -174,6 +176,9 @@ function Inner({
     id: n.id,
     type: "dep",
     position: positions[n.id],
+    // Use the same box dimensions for React Flow and Dagre. Selection only
+    // changes the highlight, so it cannot enlarge a card into its neighbour.
+    style: { width: W, height: H },
     data: {
       n,
       colorMode,
@@ -214,12 +219,20 @@ function Inner({
     };
   });
   useEffect(() => {
-    const t = setTimeout(
-      () => rf.fitView({ padding: 0.15, duration: 250 }),
-      80,
-    );
+    // Fit a newly loaded investment or an explicit reset. Selecting nodes,
+    // expanding groups and switching tabs must preserve the user's zoom.
+    if (
+      !active ||
+      (fitted.current?.positionId === analysis.position_id &&
+        fitted.current.request === fitRequest)
+    )
+      return;
+    const t = setTimeout(() => {
+      rf.fitView({ padding: 0.15, duration: 250 });
+      fitted.current = { positionId: analysis.position_id, request: fitRequest };
+    }, 80);
     return () => clearTimeout(t);
-  }, [view, rf, fitKey]);
+  }, [analysis.position_id, fitRequest, rf, active]);
   return (
     <>
       <div className="graph-tools">
@@ -257,6 +270,7 @@ function Inner({
             setExpanded(new Set());
             setAll(false);
             setPathOnly(false);
+            setFitRequest((request) => request + 1);
           }}
           title="Collapse groups"
         >
@@ -336,7 +350,7 @@ type Props = {
   selected: string | null;
   onSelect: (id: string | null) => void;
   colorMode: ColorMode;
-  fitKey: string;
+  active?: boolean;
 };
 export default function Graph(props: Props) {
   return (
