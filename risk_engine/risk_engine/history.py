@@ -63,6 +63,8 @@ class History:
             self._mem.row_factory = sqlite3.Row
         with self._conn() as c:
             c.executescript(SCHEMA)
+            if "origin_node_id" not in {r[1] for r in c.execute("PRAGMA table_info(signals)")}:
+                c.execute("ALTER TABLE signals ADD COLUMN origin_node_id TEXT")
 
     @contextmanager
     def _conn(self):
@@ -97,9 +99,10 @@ class History:
                 [(rid, ts, run["position_key"], f["node_id"], f.get("node_class"), f["mode"], run["horizon_days"], f["p"],
                   f.get("prior_p"), f.get("alert"), f.get("likelihood_ratio"), f.get("rate_multiplier")) for f in forecasts])
             c.executemany(
-                "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 [(rid, ts, run["position_key"], s["node_id"], s.get("node_class"), s.get("label"), s["mode"], s["rule"],
-                  s["level"], s.get("value"), s.get("detail")) for s in signals])
+                  s.get("effective_level", s["level"]), s.get("value"), s.get("detail"),
+                  s.get("origin_node_id", s["node_id"])) for s in signals])
             c.executemany("INSERT INTO metrics VALUES (?,?,?,?)", [(ts, nid, m, v) for nid, m, v in metrics])
         return rid
 
@@ -157,8 +160,9 @@ class History:
     def alert_episodes(self, since: float, until: float) -> list[dict]:
         """Episodes of alert-level signals (any position), one event per (component, mode) episode."""
         with self._conn() as c:
-            rows = c.execute("SELECT ts, node_id, node_class, label, mode, level FROM signals WHERE ts>=? AND ts<? "
-                             "ORDER BY node_id, mode, ts", (since, until)).fetchall()
+            rows = c.execute("SELECT ts, COALESCE(origin_node_id,node_id) AS node_id, node_class, label, mode, level "
+                             "FROM signals WHERE ts>=? AND ts<? ORDER BY COALESCE(origin_node_id,node_id), mode, ts",
+                             (since, until)).fetchall()
         out: list[dict] = []
         cur: dict | None = None
         for r in rows:

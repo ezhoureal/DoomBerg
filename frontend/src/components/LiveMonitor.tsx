@@ -26,17 +26,26 @@ export default function LiveMonitor({
   return (
     <div className="live-monitor">
       <div className="sub-h" style={{ marginTop: 0 }}>
-        Live signals
+        Monitoring snapshot
       </div>
       <div className="live-head">
-        <b className={m.verdict === "EXIT" ? "verdict-exit" : "verdict-stay"}>{m.verdict}</b>
+        <b className={m.verdict === "EXIT" ? "verdict-exit" : m.verdict === "REVIEW" ? "verdict-review" : "verdict-stay"}>{m.verdict}</b>
         <span>
-          {m.alerts.length ? `${m.alerts.length} active alert${m.alerts.length > 1 ? "s" : ""}` : "No active alerts"} · {m.regime}
+          {m.data_status === "incomplete" ? "Incomplete data" :
+           m.alerts.length ? `${m.alerts.length} active alert${m.alerts.length > 1 ? "s" : ""}` : "No active alerts"} · {m.regime}
         </span>
       </div>
-      <p className="live-note" title="Base rates are the risk accepted at entry; the verdict weighs only what today's signals and contagion add.">
-        Signals add {pct(m.avoidable_loss_pct, 2)} avoidable loss vs {pct(m.exit_cost_pct, 2)} to exit
+      <p className="live-note" title="The calculation includes base-rate risk and signal updates; no yield compensation is assumed.">
+        {m.data_status === "incomplete" ? "Provisional estimate: " : ""}
+        {pct(m.avoidable_loss_pct, 2)} avoidable expected loss vs {pct(m.exit_cost_pct, 2)} to exit
       </p>
+      {m.data_issues && m.data_issues.length > 0 && (
+        <details className="live-note">
+          <summary>Review {m.data_issues.length} missing data checks</summary>
+          {m.data_issues.map((issue) => <p key={issue.node_id}>{issue.detail}</p>)}
+        </details>
+      )}
+      {m.execution_status === "blocked" && <p className="live-note">No immediate complete exit is available. Check routing and liquidity.</p>}
       {m.alerts.map((a) => (
         <button key={a.node_id + a.mode} className="risk-row" onClick={() => onPick(a.node_id, a.mode)}
           title={a.signals.map((s) => `${s.rule_label}: ${s.detail}`).join("\n")}>

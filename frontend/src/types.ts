@@ -39,13 +39,16 @@ export type Signal = {
 export type MonitorEvent = { ts: number; position_key: string; label: string | null; kind: string; severity: "info" | "warning" | "critical"; message: string; data: Record<string, any> };
 
 export type Monitor = {
-  position_key: string; label: string; verdict: "STAY" | "EXIT";
+  position_key: string; label: string; verdict: "STAY" | "EXIT" | "REVIEW";
+  model_verdict?: "STAY" | "EXIT"; data_status?: "complete" | "incomplete";
+  data_issues?: { node_id: string; label: string; fields: string[]; detail: string }[];
+  decision_rule?: string; execution_status?: "blocked" | "available";
   expected_loss_pct: number; baseline_loss_pct: number; excess_loss_pct: number; avoidable_loss_pct: number;
   exit_cost_pct: number; instant_fraction: number; max_alert: AlertLevel; regime: "calm" | "elevated" | "stressed"; contagion_max: number;
   signals: Signal[];
   alerts: { node_id: string; label: string; mode: string; mode_label: string; level: AlertLevel; signals: Signal[] }[];
   above_break_even: { node_id: string; label: string; mode: string; mode_label: string; p: number; break_even_p: number; alert: AlertLevel }[];
-  previous: { ts: number; verdict: "STAY" | "EXIT"; expected_loss_pct: number; baseline_loss_pct: number; avoidable_loss_pct: number;
+  previous: { ts: number; verdict: "STAY" | "EXIT" | "REVIEW"; expected_loss_pct: number; baseline_loss_pct: number; avoidable_loss_pct: number;
     p_any: number; exit_cost_pct: number; max_alert: AlertLevel } | null;
   events: MonitorEvent[];
   recorded: boolean;

@@ -1875,3 +1875,5 @@ p {
     padding: 10px 0;
   }
 }
+
+.verdict-review { color: var(--gold); }

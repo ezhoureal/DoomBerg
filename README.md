@@ -471,16 +471,22 @@ For a market supply, only the share that can be withdrawn right now escapes the 
 
 ### 9.1 Daily monitoring
 
-The same rule runs every day on a watchlist, but against what has **changed**. Base rates are the risk accepted when the position was entered, and the yield pays for it; judged against the exit cost alone they would say EXIT every day. So the daily verdict is:
+Daily monitoring uses the same economic comparison as the scenario model:
 
-> **Exit if:** (today's probability − base-rate probability) × loss if it fails × withdrawable share, summed over components > cost of exiting now
+> **Exit if:** total expected loss × withdrawable share > cost of exiting now
+
+Base-rate risk is included. The increase over current base rates is shown as context, not deducted as an assumed yield credit. No entry-time risk budget or yield compensation is inferred. Component losses are an approximate sum; warnings propagated from a stale feed to its oracle share one cause and are counted once.
+
+Missing or invalid feed answers, update ages, asset prices or required liquidity readings produce **REVIEW** rather than an actionable STAY/EXIT. The provisional model result remains available, missing checks are listed, and a data-quality notification is stored. Incomplete runs are excluded from calibration forecasts. A STAY with no immediate exit route is explicitly marked as execution blocked.
 
 Today's probability moves for two reasons, neither typed in by a person:
 
-1. **Signal rules set the alert level** of each (component, failure mode), which feeds the likelihood-ratio update. Level rules read live data: a stablecoin more than 0.5% off its peg (watch) or 2% (alert), the oracle pricing the collateral 2% / 5% above the market, a feed past its heartbeat, utilization above 97% / 99.5%, unrealized bad debt, the collateral's 24h price move. Change rules compare with the stored history: supply or AMM liquidity withdrawn over 24h, a token's 24h drop, a jump in the PT's implied APY. Two independent rule families at once escalate to *corroborated*. *Confirmed* is left to a person.
+1. **Signal rules set the alert level** of each (component, failure mode), which feeds the likelihood-ratio update. Level rules read live data: a stablecoin more than 0.5% off its peg (watch) or 2% (alert), the oracle pricing the collateral 2% / 5% above the market, a feed past its configured staleness threshold (26 hours, or 35 days for NAV feeds; these are assumptions, not verified per-feed heartbeats), utilization above 97% / 99.5%, unrealized bad debt, the collateral's 24h price move. Change rules compare with the stored history: supply or AMM liquidity withdrawn over 24h, a token's 24h drop, a jump in the PT's implied APY. Two independent watch families escalate to *alert*; two families with at least one alert escalate to *corroborated*. Combined levels are used in both stored episodes and contagion. *Confirmed* is left to a person.
 2. **Failure rates vary over time** (`contagion.py`): a Hawkes-style term raises a component's hazard after recent related events (a failure or an alert on the same component, the same asset class, or anywhere), decaying with a 30-day time constant and capped at x5.
 
 Each scheduled run is stored in SQLite (`history.py`): the verdict, every (component, mode) probability, the signals and the raw readings. Comparing with the previous run raises notifications when the verdict flips, a probability crosses its break-even, an alert level rises, or expected loss doubles; they are logged, stored and, if `ALERT_WEBHOOK_URL` is set, posted to Slack. Recording outcomes (`POST /api/monitor/outcomes`) closes the loop: `calibration.py` scores matured forecasts (Brier score, a reliability table) and estimates each alert level's likelihood ratio from data, which can later replace the hand-set values.
+
+Calibration scores use non-overlapping windows per component and failure mode across positions. The report separates distinct incidents from positive forecasts and retains the low-data warning until ten distinct incidents exist. Different components can still be correlated; all outcomes must be recorded comprehensively. A malformed watchlist entry is reported individually without stopping the other positions.
 
 Incident replay is not part of the daily loop. It tests the model after a change; it does not run it.
 

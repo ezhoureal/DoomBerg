@@ -19,6 +19,7 @@ automatically: a person confirms an incident. Thresholds are judgement calls and
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 from typing import Protocol
 
 from .failures import asset_vol
@@ -60,14 +61,40 @@ class Signal:
     threshold: float
     detail: str
     first_seen: float | None = None
+    origin_node_id: str | None = None
 
     def to_dict(self) -> dict:
-        return {**asdict(self), "rule_label": RULES[self.rule]["label"]}
+        return {**asdict(self), "origin_node_id": self.origin_node_id or self.node_id,
+                "rule_label": RULES[self.rule]["label"]}
+
+
+def data_issues(g: DependencyGraph) -> list[dict]:
+    """Missing readings are unknown, not evidence that a monitored check passed."""
+    def valid(v, positive=False):
+        return isinstance(v, (int, float)) and math.isfinite(v) and (v > 0 if positive else v >= 0)
+    issues = []
+    for node in g.nodes.values():
+        a = node.attrs
+        checks = {}
+        if node.type == "feed":
+            checks = {"answer": valid(a.get("answer"), True), "age_s": valid(a.get("age_s"))}
+        elif node.type == "asset":
+            checks = {"price_usd": valid(a.get("price_usd"), True)}
+        elif node.type == "market":
+            checks = {k: valid(a.get(k)) for k in ("utilization", "supply_usd", "liquidity_usd")}
+            checks["utilization"] = checks["utilization"] and a["utilization"] <= 1
+        elif node.type == "amm":
+            checks = {"liquidity_usd": valid(a.get("liquidity_usd"))}
+        missing = [k for k, ok in checks.items() if not ok]
+        if missing:
+            issues.append({"node_id": node.id, "label": node.label, "fields": missing,
+                           "detail": f"{node.label}: missing or invalid {', '.join(missing)}"})
+    return issues
 
 
 def _grade(rule: str, value: float | None) -> tuple[str, float] | None:
     """Level reached by ``value`` on ``rule``, with the threshold it crossed."""
-    if value is None:
+    if value is None or not math.isfinite(value):
         return None
     r = RULES[rule]
     if "alert" in r and value >= r["alert"]:
@@ -90,7 +117,7 @@ def observe(g: DependencyGraph) -> list[tuple[str, str, float]]:
     for n in g.nodes.values():
         for k in keep.get(n.type, ()):
             v = n.attrs.get(k)
-            if isinstance(v, (int, float)):
+            if isinstance(v, (int, float)) and math.isfinite(v):
                 out.append((n.id, k, float(v)))
         if n.type == "asset" and n.risk_factors.get("price_deviation") is not None:
             out.append((n.id, "peg_deviation", float(n.risk_factors["price_deviation"])))
@@ -100,10 +127,11 @@ def observe(g: DependencyGraph) -> list[tuple[str, str, float]]:
 def detect(g: DependencyGraph, now: float, history: MetricHistory | None = None) -> list[Signal]:
     sig: list[Signal] = []
 
-    def fire(node: Node, mode: str, rule: str, value: float | None, detail: str):
+    def fire(node: Node, mode: str, rule: str, value: float | None, detail: str, origin: str | None = None):
         hit = _grade(rule, value)
         if hit:
-            sig.append(Signal(node.id, node.label, mode, rule, hit[0], float(value), hit[1], detail))
+            sig.append(Signal(node.id, node.label, mode, rule, hit[0], float(value), hit[1], detail,
+                              origin_node_id=origin or node.id))
 
     def change(node_id: str, metric: str, now_value, worst) -> float | None:
         """Worst value of ``metric`` over the previous 24h, or None without history."""
@@ -129,7 +157,7 @@ def detect(g: DependencyGraph, now: float, history: MetricHistory | None = None)
             fire(n, "oracle_stale", "feed_stale", 1.0, detail)
             for e in g.in_edges(n.id):
                 if e.type == "reads_feed":
-                    fire(g.nodes[e.source], "oracle_stale", "feed_stale", 1.0, detail)
+                    fire(g.nodes[e.source], "oracle_stale", "feed_stale", 1.0, detail, origin=n.id)
         elif n.type == "oracle":
             gap = a.get("oracle_dex_gap")
             if gap is not None:
@@ -178,8 +206,9 @@ def alert_levels(signals: list[Signal]) -> dict[tuple[str, str], dict]:
     grouped: dict[tuple[str, str], dict[str, Signal]] = {}
     for s in signals:
         rules = grouped.setdefault((s.node_id, s.mode), {})
-        if s.rule not in rules or LEVEL_RANK[s.level] > LEVEL_RANK[rules[s.rule].level]:
-            rules[s.rule] = s
+        rule_key = f"{s.rule}|{s.origin_node_id or s.node_id}"
+        if rule_key not in rules or LEVEL_RANK[s.level] > LEVEL_RANK[rules[rule_key].level]:
+            rules[rule_key] = s
     out = {}
     for key, rules in grouped.items():
         families: dict[str, str] = {}

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -29,7 +30,7 @@ from .graph import DependencyGraph
 from .history import History
 from .probability import ALERT_LEVELS, failure_probability
 from .propagation import Simulator, explain_paths, histogram, summarize
-from .signals import LEVEL_RANK, alert_levels, detect, max_level, node_class, observe
+from .signals import LEVEL_RANK, alert_levels, data_issues, detect, max_level, node_class, observe
 
 INCIDENTS = json.loads((Path(__file__).parent / "data" / "incidents.json").read_text(encoding="utf-8"))["incidents"]
 
@@ -138,6 +139,11 @@ class RiskEngine:
                 continue
             for m in applicable_modes(node.type, node.attrs):
                 lv = levels.get((nid, m.id))
+                if m.id == "oracle_stale" and lv and all(
+                    s.get("origin_node_id", nid) != nid for s in lv["signals"]
+                ):
+                    # The parent displays its feed's warning, but the feed owns the forecast.
+                    continue
                 mu = mults.get((nid, m.id)) or {"multiplier": 1.0, "reasons": []}
                 prob = failure_probability(node, m.id, horizon_days, rng, alert=lv["level"] if lv else "none", n=1000,
                                            rate_multiplier=mu["multiplier"], multiplier_reasons=mu["reasons"])
@@ -168,33 +174,34 @@ class RiskEngine:
     # ------------------------------------------------------------------ monitor
     def monitor(self, g: DependencyGraph, req: PositionRequest, horizon_days: float, screening: dict, calm_exit: dict,
                 signals: list, levels: dict, mults: dict, record: bool, now: float) -> dict:
-        """Daily verdict: exit if the risk today's news adds on top of the base rates is worth more than leaving.
+        """Compare total avoidable expected loss with execution cost, including base-rate risk.
 
-        Base rates are the risk accepted when the position was entered (the yield pays for it); judged
-        against exit cost on their own they would say EXIT every day. What changes from day to day is
-        the excess: probability raised by live signals and contagion, p - base_p. So the rule of
-        ``decide()`` is applied to that excess: exit if sum((p - base_p) x loss) x withdrawable share
-        > exit cost. A component's break-even is base_p + exit cost / (loss x withdrawable share).
+        Excess over the current base-rate estimate is context, not an assumed yield credit.
+        Missing required readings suppress an actionable verdict and produce REVIEW.
         """
         c, f = calm_exit["cost_pct"], min(max(calm_exit["instant_fraction"], 0.0), 1.0)
         rows = screening["rows"]
         for r in rows:
             lf = r["loss_given_failure"] * f
-            r["break_even_p"] = r["base_p"] + c / lf if lf > 1e-12 and r["base_p"] + c / lf < 1 else None
+            r["break_even_p"] = c / lf if lf > 1e-12 and c / lf < 1 else None
             r["above_break_even"] = r["break_even_p"] is not None and r["p"] > r["break_even_p"]
         el = screening["total_expected_loss_pct"]
         base_el = sum(r["base_p"] * r["loss_given_failure"] for r in rows)
         excess = max(el - base_el, 0.0)
-        verdict = "EXIT" if excess * f > c else "STAY"
+        model_verdict = "EXIT" if el * f > c else "STAY"
+        issues = data_issues(g)
+        verdict = "REVIEW" if issues else model_verdict
         key = position_key(req, horizon_days)
-        sig = [{**s.to_dict(), "node_class": node_class(g.nodes[s.node_id])} for s in signals]
+        sig = [{**s.to_dict(), "node_class": node_class(g.nodes[s.origin_node_id or s.node_id]),
+                "effective_level": levels[(s.node_id, s.mode)]["level"]} for s in signals]
         run = {
             "ts": now, "position_key": key, "label": g.nodes[g.root].label, "kind": req.kind, "address": req.address,
             "chain_id": req.chain_id, "size_usd": req.size_usd, "horizon_days": horizon_days, "verdict": verdict,
-            "expected_loss_pct": el, "baseline_loss_pct": base_el, "avoidable_loss_pct": excess * f, "p_any": screening["p_any_loss_event"],
+            "expected_loss_pct": el, "baseline_loss_pct": base_el, "avoidable_loss_pct": el * f, "p_any": screening["p_any_loss_event"],
             "exit_cost_pct": c, "instant_fraction": f, "max_alert": max_level(levels),
             "contagion": max((m["multiplier"] for m in mults.values()), default=1.0),
-            "summary": {"rows": {f"{r['node_id']}|{r['mode']}": {
+            "summary": {"data_issues": issues, "model_verdict": model_verdict,
+                        "decision_rule": "total_avoidable_loss", "rows": {f"{r['node_id']}|{r['mode']}": {
                 "node_id": r["node_id"], "mode": r["mode"], "label": r["label"], "mode_label": r["mode_label"], "p": r["p"],
                 "break_even_p": r["break_even_p"], "above": r["above_break_even"], "alert": r["alert"],
                 "el": r["expected_loss_pct"], "signals": r["signals"]} for r in rows}},
@@ -202,13 +209,16 @@ class RiskEngine:
         prev = self.history.last_run(key, before=now) if self.history else None
         events = notify.diff(prev, run, now)
         if record and self.history:
-            self.history.record_run(run, rows, sig, observe(g))
+            # Unknown readings must not create apparently valid calibration forecasts.
+            self.history.record_run(run, [] if issues else rows, sig, observe(g))
             self.history.add_events(events)
             notify.deliver(events)
         above = sorted((r for r in rows if r["above_break_even"]), key=lambda r: -r["p"] / r["break_even_p"])
         return {
             "position_key": key, "label": run["label"], "verdict": verdict, "expected_loss_pct": el, "baseline_loss_pct": base_el,
-            "excess_loss_pct": excess, "avoidable_loss_pct": excess * f,
+            "excess_loss_pct": excess, "avoidable_loss_pct": el * f,
+            "model_verdict": model_verdict, "data_status": "incomplete" if issues else "complete", "data_issues": issues,
+            "decision_rule": "total_avoidable_loss", "execution_status": "blocked" if f == 0 else "available",
             "exit_cost_pct": c, "instant_fraction": f, "max_alert": run["max_alert"],
             "regime": contagion.regime(mults), "contagion_max": run["contagion"],
             "signals": sorted(sig, key=lambda s: -LEVEL_RANK[s["level"]]),
@@ -369,10 +379,14 @@ class RiskEngine:
         """Screen and record every position of a watchlist (dicts shaped like ``PRESETS``). One failure does not stop the rest."""
         out = []
         for it in items:
-            req = PositionRequest(it.get("kind", "token"), it["address"], int(it.get("chain_id", 1)),
-                                  float(it.get("size_usd", 1_000_000)), float(it.get("book_usd", 10_000_000)), it.get("label"))
-            h = float(it.get("horizon_days", horizon_days))
             try:
+                req = PositionRequest(it.get("kind", "token"), it["address"], int(it.get("chain_id", 1)),
+                                      float(it.get("size_usd", 1_000_000)), float(it.get("book_usd", 10_000_000)), it.get("label"))
+                h = float(it.get("horizon_days", horizon_days))
+                if req.kind not in ("market", "token") or not isinstance(req.address, str) or not req.address.strip():
+                    raise ValueError("A token or market position with an address is required")
+                if req.chain_id <= 0 or any(not math.isfinite(v) or v <= 0 for v in (req.size_usd, req.book_usd, h)) or h > 365:
+                    raise ValueError("Positive finite size, book and chain, and horizon in (0,365] are required")
                 a = self.analyze(req, h, record=True)
                 m = a["monitor"]
                 self.store.pop(a["position_id"], None)
@@ -380,7 +394,8 @@ class RiskEngine:
                                                              "max_alert", "regime")},
                             "events": m["events"]})
             except Exception as e:  # noqa: BLE001 - keep monitoring the other positions
-                out.append({"label": it.get("label") or it["address"], "ok": False, "error": f"{type(e).__name__}: {e}"})
+                label = (it.get("label") or it.get("address") or "Invalid position") if isinstance(it, dict) else "Invalid position"
+                out.append({"label": label, "ok": False, "error": f"{type(e).__name__}: {e}"})
         return out
 
     # ------------------------------------------------------------------ misc

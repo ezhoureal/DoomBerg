@@ -105,10 +105,14 @@ def liquid():
     """Held PT on a deep AMM, so the exit is cheap (constant-product impact ~0.4% on $1M)."""
     g = build()
     g.nodes["amm"].attrs["liquidity_usd"] = 500e6
+    for node in g.nodes.values():
+        if node.type == "asset":
+            node.attrs["price_usd"] = 1.0
     return g
 
 
-def test_signals_move_screening_probability_and_verdict():
+def test_signals_move_screening_probability_and_verdict(monkeypatch):
+    monkeypatch.setattr("risk_engine.engine.exit_cost", lambda *a, **k: {"cost_pct": .03, "instant_fraction": 1})
     eng = RiskEngine(history=History(":memory:"))
     calm = eng.evaluate(liquid(), TOKEN, record=True, now=T0)
     assert calm["monitor"]["verdict"] == "STAY" and calm["monitor"]["events"] == []
@@ -191,9 +195,9 @@ def test_calibration_counts_one_forecast_per_day_and_scores():
                        "horizon_days": 30, "p": 0.1, "alert": "none", "likelihood_ratio": None})
     outcomes = [{"node_id": "usdx", "mode": "depeg", "ts": T0 + 40 * DAY}]
     r = calibration.report(fc, outcomes, now=T0 + 90 * DAY)
-    assert r["n"] == 60 and r["pending"] == 0
-    assert r["events"] == 31  # forecasts made on days 10..40 cover day 40
-    assert 0 <= r["brier"] <= 1 and r["reliability"][0]["n"] == 60
+    assert r["n"] == 2 and r["daily_forecasts"] == 60 and r["pending"] == 0
+    assert r["events"] == 1 and r["positive_forecasts"] == 1  # one distinct incident
+    assert 0 <= r["brier"] <= 1 and r["reliability"][0]["n"] == 2
     assert calibration.report(fc, outcomes, now=T0)["n"] == 0
 
 
