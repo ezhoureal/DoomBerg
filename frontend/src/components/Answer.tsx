@@ -78,6 +78,11 @@ export default function Answer({
   }));
   const path = r.paths[0]?.hops ?? [];
   const amounts = exitAmounts(r);
+  const [costLow, costHigh] = r.exit.cost_pct_ci.map((c) =>
+    usd(c * r.position.size_usd),
+  );
+  const costRange =
+    costLow === costHigh ? costLow : `${costLow} – ${costHigh}`;
   return (
     <section className="answer">
       <div className="result-heading">
@@ -152,7 +157,7 @@ export default function Answer({
           <b>
             {r.exit.override !== undefined
               ? `${usd(d.exit_cost_usd)} · override`
-              : `${usd(r.exit.cost_pct_ci[0] * r.position.size_usd)} – ${usd(r.exit.cost_pct_ci[1] * r.position.size_usd)}`}
+              : costRange}
           </b>
         </div>
       </div>

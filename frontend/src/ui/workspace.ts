@@ -16,6 +16,19 @@ export type ScenarioRecord = {
   result: ShockResult;
 };
 export const HISTORY_LIMIT = 20;
+
+// Whether two requests describe the same position. Size, book and horizon may
+// differ (a refresh or an edited size); a different market or token may not.
+export function samePosition(
+  a: Analysis["request"],
+  b: Analysis["request"],
+): boolean {
+  return (
+    a.kind === b.kind &&
+    a.chain_id === b.chain_id &&
+    a.address.toLowerCase() === b.address.toLowerCase()
+  );
+}
 export const REFRESH_AFTER_MS = 5 * 60_000;
 
 // These identify saved UI records, not cryptographic keys. The fallback also

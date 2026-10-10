@@ -9,13 +9,11 @@ import Freshness from "./Freshness";
 export default function InvestmentOverview({
   open,
   items,
-  now,
   onClose,
   onSelect,
 }: {
   open: boolean;
   items: Investment[];
-  now: number;
   onClose: () => void;
   onSelect: (id: string) => void;
 }) {
@@ -90,7 +88,6 @@ export default function InvestmentOverview({
                         <Freshness
                           refreshedAt={item.refreshedAt}
                           needsRefresh={item.needsRefresh}
-                          now={now}
                         />
                       )}
                     </td>

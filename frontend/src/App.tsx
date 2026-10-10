@@ -3,7 +3,6 @@ import {
   useCallback,
   useEffect,
   useReducer,
-  useMemo,
   useRef,
   useState,
   type Dispatch,
@@ -17,7 +16,8 @@ import InvestmentWorkspace from "./components/InvestmentWorkspace";
 import InvestmentTabs from "./components/InvestmentTabs";
 import InvestmentOverview from "./components/InvestmentOverview";
 import {
-  restoreWorkspace,
+  BACKUP_KEY,
+  parseWorkspace,
   serializeWorkspace,
   STORAGE_KEY,
 } from "./ui/storage";
@@ -31,6 +31,7 @@ import {
   investmentsReducer,
   type Investment,
   type InvestmentsAction,
+  type InvestmentsState,
 } from "./ui/investments";
 
 // Keep workspaces mounted when switching tabs, preserving graph controls,
@@ -46,8 +47,9 @@ const WorkspaceTab = memo(function WorkspaceTab({
   onAdd,
   dispatch,
   onOverview,
-  now,
   saveError,
+  notice,
+  onDismissNotice,
 }: {
   item: Investment;
   active: boolean;
@@ -57,8 +59,9 @@ const WorkspaceTab = memo(function WorkspaceTab({
   onAdd: () => void;
   dispatch: Dispatch<InvestmentsAction>;
   onOverview: () => void;
-  now: number;
   saveError: string | null;
+  notice: string | null;
+  onDismissNotice: () => void;
 }) {
   const onAnalysis = useCallback(
     (analysis: Analysis, role: PositionRole, refreshedAt: string) =>
@@ -101,36 +104,69 @@ const WorkspaceTab = memo(function WorkspaceTab({
         onScenario={onScenario}
         onInvalid={onInvalid}
         onOverview={onOverview}
-        now={now}
         saveError={saveError}
+        notice={notice}
+        onDismissNotice={onDismissNotice}
       />
     </div>
   );
 });
 
 const noop = () => {};
-// crypto.randomUUID is unavailable over plain HTTP on a LAN address.
+
+function loadWorkspace() {
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(STORAGE_KEY);
+    const saved = parseWorkspace(raw);
+    if (saved.skipped) window.localStorage.setItem(BACKUP_KEY, raw!);
+    return {
+      ...saved,
+      error: saved.skipped
+        ? `${saved.skipped} saved investment or scenario record${saved.skipped === 1 ? "" : "s"} could not be restored and ${saved.skipped === 1 ? "was" : "were"} left out. The original data is kept in this browser under ${BACKUP_KEY}.`
+        : null,
+    };
+  } catch {
+    try {
+      if (raw) window.localStorage.setItem(BACKUP_KEY, raw);
+    } catch {
+      /* storage unavailable */
+    }
+    return {
+      state: emptyInvestments,
+      closed: [],
+      skipped: 0,
+      error: raw
+        ? `Saved workspace could not be restored. The original data is kept in this browser under ${BACKUP_KEY}.`
+        : null,
+    };
+  }
+}
+
+// The parts of the workspace that are saved. Busy flags and selection-only
+// renders don't change them, so they don't trigger a save.
+function savedParts(state: InvestmentsState) {
+  return [
+    state.activeId,
+    ...state.items.flatMap((i) => [
+      i.id,
+      i.analysis,
+      i.history,
+      i.role,
+      i.refreshedAt,
+    ]),
+  ];
+}
 
 export default function App() {
-  const [loaded] = useState(() => {
-    try {
-      return {
-        state: restoreWorkspace(window.localStorage.getItem(STORAGE_KEY)),
-        error: null,
-      };
-    } catch {
-      return {
-        state: emptyInvestments,
-        error:
-          "Saved workspace could not be restored. Add investments to create a new workspace.",
-      };
-    }
-  });
+  const [loaded] = useState(loadWorkspace);
   const [investments, dispatch] = useReducer(investmentsReducer, loaded.state);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [service, setService] = useState("Checking API");
-  const [now, setNow] = useState(Date.now());
-  const [saveError, setSaveError] = useState<string | null>(loaded.error);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // Kept apart from saveError, which every successful save clears.
+  const [restoreNotice, setRestoreNotice] = useState(loaded.error);
+  const onDismissNotice = useCallback(() => setRestoreNotice(null), []);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [positionOpen, setPositionOpen] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -142,24 +178,49 @@ export default function App() {
     setPositionOpen(true);
   }, []);
   const onOverview = useCallback(() => setOverviewOpen(true), []);
-  const persisted = useMemo(
-    () => serializeWorkspace(investments),
-    [investments],
-  );
+  // Investments closed here, saved so other open tabs drop them on merge.
+  const closed = useRef(new Set(loaded.closed));
+  // Start from what was loaded, so mounting doesn't rewrite unchanged data.
+  const savedRef = useRef(savedParts(loaded.state));
   useEffect(() => {
-    if (loaded.error && !investments.items.length) return;
+    const parts = savedParts(investments);
+    if (
+      parts.length === savedRef.current.length &&
+      parts.every((part, i) => part === savedRef.current[i])
+    )
+      return;
+    savedRef.current = parts;
     try {
-      window.localStorage.setItem(STORAGE_KEY, persisted);
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        serializeWorkspace(investments, [...closed.current]),
+      );
       setSaveError(null);
     } catch {
       setSaveError(
         "Workspace changes could not be saved in this browser. Your open tabs still work; do not rely on reload restoring the latest runs.",
       );
     }
-  }, [persisted, loaded.error, investments.items.length]);
+  }, [investments]);
+  // Every tab saves the whole workspace to one key, so merge what other tabs
+  // save instead of letting the last writer discard their investments.
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY || !event.newValue) return;
+      try {
+        const saved = parseWorkspace(event.newValue);
+        saved.closed.forEach((id) => closed.current.add(id));
+        dispatch({
+          type: "merge",
+          items: saved.state.items,
+          closed: [...closed.current],
+        });
+      } catch {
+        /* ignore data this tab cannot read */
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   useEffect(() => {
@@ -229,7 +290,10 @@ export default function App() {
       activeId={investments.activeId}
       onAdd={onAdd}
       onSelect={(id) => dispatch({ type: "select", id })}
-      onClose={(id) => dispatch({ type: "close", id })}
+      onClose={(id) => {
+        closed.current.add(id);
+        dispatch({ type: "close", id });
+      }}
     />
   );
   return (
@@ -245,14 +309,15 @@ export default function App() {
           onAnalysis={noop}
           onBusy={noop}
           role="entered"
-          refreshedAt={new Date(now).toISOString()}
+          refreshedAt=""
           needsRefresh={false}
           history={[]}
           onScenario={noop}
           onInvalid={noop}
           onOverview={onOverview}
-          now={now}
           saveError={saveError}
+          notice={restoreNotice}
+          onDismissNotice={onDismissNotice}
         />
       )}
       {investments.items.map((item) => (
@@ -266,14 +331,14 @@ export default function App() {
           onAdd={onAdd}
           dispatch={dispatch}
           onOverview={onOverview}
-          now={now}
           saveError={saveError}
+          notice={restoreNotice}
+          onDismissNotice={onDismissNotice}
         />
       ))}
       <InvestmentOverview
         open={overviewOpen}
         items={investments.items}
-        now={now}
         onClose={() => setOverviewOpen(false)}
         onSelect={(id) => {
           dispatch({ type: "select", id });
