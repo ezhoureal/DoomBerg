@@ -152,7 +152,7 @@ function PositionDetail({ snapshot, pr, onSelect }: Props & { pr: PositionRisk }
           <Stat label="Carry (yield)" value={usd(pr.carryUsd)} sub={`${pos.apr}% APR`} />
           <Stat label="Expected loss (total)" value={usd(pr.elUsd)} sub={bps(pr.elPct)} />
           <Stat label="of which baseline" value={usd(pr.baselineElUsd)} sub="underwritten at entry" />
-          <Stat label="Incident-driven EL" value={usd(pr.excessElUsd)} sub="avoided by exiting" strong />
+          <Stat label="Avoided by exiting" value={usd(pr.avoidableElUsd)} sub={`of ${usd(pr.excessElUsd)} incident EL`} strong />
           <Stat label="Exit cost" value={usd(pr.exitCostUsd)} sub={bps(pr.exitCostPct)} strong />
           <Stat label="Stressed loss" value={usd(pr.stressedLossUsd)} sub={`${pct(pr.stressedLossPct)} if incidents hit`} />
           <Stat
@@ -161,9 +161,9 @@ function PositionDetail({ snapshot, pr, onSelect }: Props & { pr: PositionRisk }
             sub={pr.breakEvenP === null ? "no active incident" : `current ${pct(pr.incidentP)}`}
           />
         </div>
-        <ElVsExit el={pr.excessElUsd} exit={pr.exitCostUsd} />
+        <ElVsExit el={pr.avoidableElUsd} exit={pr.exitCostUsd} />
         <div className="row small muted">
-          <span>■ incident EL</span>
+          <span>■ avoidable incident EL</span>
           <span>■ exit cost</span>
         </div>
       </div>
@@ -381,6 +381,7 @@ function formatMetric(k: string, v: number | undefined) {
   if (k === "utilization" || k === "lltv" || k === "tvlShareOfChain") return pct(v, 1);
   if (/Pct|Apr/.test(k)) return `${v}%`;
   if (/Sec/.test(k)) return `${v}s`;
+  if (/Ms$/.test(k)) return `${v}ms`;
   return String(v);
 }
 

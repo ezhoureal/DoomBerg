@@ -51,7 +51,7 @@ type PositionNodeData = {
   chain: string;
   valueUsd: number;
   decision: Decision;
-  excessElUsd: number;
+  avoidableElUsd: number;
   exitCostUsd: number;
   contagion: boolean;
   dim: boolean;
@@ -112,7 +112,7 @@ function PositionNode({ data }: NodeProps<Node<PositionNodeData>>) {
       <div className="pn-stats">
         <span>{usd(data.valueUsd, 0)}</span>
         <span title="Incident-driven expected loss vs exit cost">
-          EL {usd(data.excessElUsd)} / exit {usd(data.exitCostUsd)}
+          EL {usd(data.avoidableElUsd)} / exit {usd(data.exitCostUsd)}
         </span>
       </div>
       <Handle type="source" position={HandlePos.Right} />
@@ -230,7 +230,7 @@ export function GraphView({ snapshot, risk, warnings, selection, onSelect, focus
           chain: p.chain,
           valueUsd: p.valueUsd,
           decision: pr.decision,
-          excessElUsd: pr.excessElUsd,
+          avoidableElUsd: pr.avoidableElUsd,
           exitCostUsd: pr.exitCostUsd,
           contagion: inContagion,
           dim: dim(p.id),

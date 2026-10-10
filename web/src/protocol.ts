@@ -2,10 +2,10 @@
  * Belem risk-graph wire protocol (v1).
  *
  * A `RiskSnapshot` is everything the frontend needs to render the dependency
- * graph and compute stay/exit signals. The backend only has to produce raw
- * facts (graph, metrics, incidents, exit quotes); all risk numbers are derived
- * client-side in `model/risk.ts`, so the model can be audited and tuned in one
- * place. See docs/protocol.md for field-level semantics.
+ * graph and compute stay/exit signals. The backend supplies graph data,
+ * measurements, incidents, quotes and explicitly modeled risk inputs.
+ * Portfolio calculations are client-side in `model/risk.ts`; warnings combine
+ * backend flags and frontend rules. See docs/protocol.md for semantics.
  */
 
 export const SCHEMA_VERSION = "1.0";
@@ -193,7 +193,8 @@ export interface Portfolio {
 export interface RiskSnapshot {
   schemaVersion: string;
   asOf: string; // ISO-8601
-  source: "mock" | "live";
+  /** mock: bundled static file; simulation: backend with simulated risk events; live: real data. */
+  source: "mock" | "simulation" | "live";
   portfolio: Portfolio;
   positions: Position[];
   nodes: GraphNode[];
