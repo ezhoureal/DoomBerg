@@ -1,0 +1,14 @@
+The Belem Capital
+
+In the DeFi Risk Dependency Challenge, we want teams to build a working risk system that can automatically uncover the hidden dependencies behind an on-chain position and quantify what happens when one of those dependencies fails.
+
+A single DeFi position may rely on multiple layers,including the settlement chain, underlying assets or yield sources, oracles, liquidity venues, lending markets, and other protocols, so the goal is to turn this complex dependency graph into a clear, defensible risk signal that a portfolio manager can actually use.
+
+Your prototype should identify dependencies, estimate the potential economic impact of a security incident, market disruption, or technical failure, and ultimately help answer the real decision: is the expected loss from staying in the position high enough to justify exiting despite slippage and execution costs?
+
+You are free to use graph analysis, simulations, statistical models, agent-based approaches, or any other methodology, across EVM, Solana, Canton, Tempo, or other ecosystems with the emphasis being on sound reasoning, accurate dependency discovery, defensible impact estimation, and a working implementation using real data.
+
+The strongest submissions will go beyond simply flagging that an incident occurred. They should explain how that incident propagates through the position's dependency stack and what the resulting portfolio impact could be. As illustrated by the Pendle PT example in the challenge brief, even one portfolio position can depend on five distinct layers, from the settlement chain and underlying yield source through the oracle, AMM market, and lending venue.
+What we expect
+
+Build a working prototype, not just an architecture or slide deck. It should operate on real data and produce an output that a risk or portfolio manager could realistically act on. Projects will be judged on dependency discovery (30%), impact estimation (30%), decision usefulness: stay or exit, and why (25%), and the quality of the working demo on real data (15%).
