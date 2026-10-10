@@ -174,12 +174,15 @@ class RiskEngine:
     # ------------------------------------------------------------------ monitor
     def monitor(self, g: DependencyGraph, req: PositionRequest, horizon_days: float, screening: dict, calm_exit: dict,
                 signals: list, levels: dict, mults: dict, record: bool, now: float) -> dict:
-        """Compare total avoidable expected loss with execution cost, including base-rate risk.
+        """Exit if (expected loss - yield given up) x withdrawable share > exit cost, base-rate risk included.
 
-        Excess over the current base-rate estimate is context, not an assumed yield credit.
+        Staying earns the position's yield (PT implied APY, or the market's supply APY) over the horizon.
+        The exit cost already charges the yield lost while redeploying, so only the rest of the horizon is
+        credited, and the exited capital is assumed to earn nothing after that.
         Missing required readings suppress an actionable verdict and produce REVIEW.
         """
         c, f = calm_exit["cost_pct"], min(max(calm_exit["instant_fraction"], 0.0), 1.0)
+        yld = (calm_exit.get("apy") or 0.0) * max(horizon_days - calm_exit.get("redeploy_days", 0.0), 0.0) / 365
         rows = screening["rows"]
         for r in rows:
             lf = r["loss_given_failure"] * f
@@ -188,7 +191,8 @@ class RiskEngine:
         el = screening["total_expected_loss_pct"]
         base_el = sum(r["base_p"] * r["loss_given_failure"] for r in rows)
         excess = max(el - base_el, 0.0)
-        model_verdict = "EXIT" if el * f > c else "STAY"
+        net = (el - yld) * f
+        model_verdict = "EXIT" if net > c else "STAY"
         issues = data_issues(g)
         verdict = "REVIEW" if issues else model_verdict
         key = position_key(req, horizon_days)
@@ -198,10 +202,11 @@ class RiskEngine:
             "ts": now, "position_key": key, "label": g.nodes[g.root].label, "kind": req.kind, "address": req.address,
             "chain_id": req.chain_id, "size_usd": req.size_usd, "horizon_days": horizon_days, "verdict": verdict,
             "expected_loss_pct": el, "baseline_loss_pct": base_el, "avoidable_loss_pct": el * f, "p_any": screening["p_any_loss_event"],
+            "yield_pct": yld, "net_loss_pct": net,
             "exit_cost_pct": c, "instant_fraction": f, "max_alert": max_level(levels),
             "contagion": max((m["multiplier"] for m in mults.values()), default=1.0),
             "summary": {"data_issues": issues, "model_verdict": model_verdict,
-                        "decision_rule": "total_avoidable_loss", "rows": {f"{r['node_id']}|{r['mode']}": {
+                        "decision_rule": "net_of_yield", "rows": {f"{r['node_id']}|{r['mode']}": {
                 "node_id": r["node_id"], "mode": r["mode"], "label": r["label"], "mode_label": r["mode_label"], "p": r["p"],
                 "break_even_p": r["break_even_p"], "above": r["above_break_even"], "alert": r["alert"],
                 "el": r["expected_loss_pct"], "signals": r["signals"]} for r in rows}},
@@ -216,9 +221,9 @@ class RiskEngine:
         above = sorted((r for r in rows if r["above_break_even"]), key=lambda r: -r["p"] / r["break_even_p"])
         return {
             "position_key": key, "label": run["label"], "verdict": verdict, "expected_loss_pct": el, "baseline_loss_pct": base_el,
-            "excess_loss_pct": excess, "avoidable_loss_pct": el * f,
+            "excess_loss_pct": excess, "avoidable_loss_pct": el * f, "yield_pct": yld, "net_loss_pct": net,
             "model_verdict": model_verdict, "data_status": "incomplete" if issues else "complete", "data_issues": issues,
-            "decision_rule": "total_avoidable_loss", "execution_status": "blocked" if f == 0 else "available",
+            "decision_rule": "net_of_yield", "execution_status": "blocked" if f == 0 else "available",
             "exit_cost_pct": c, "instant_fraction": f, "max_alert": run["max_alert"],
             "regime": contagion.regime(mults), "contagion_max": run["contagion"],
             "signals": sorted(sig, key=lambda s: -LEVEL_RANK[s["level"]]),
@@ -226,8 +231,8 @@ class RiskEngine:
                                "level": v["level"], "signals": v["signals"]} for k, v in levels.items()),
                              key=lambda a: -LEVEL_RANK[a["level"]]),
             "above_break_even": [{k: r[k] for k in ("node_id", "label", "mode", "mode_label", "p", "break_even_p", "alert")} for r in above],
-            "previous": {k: prev[k] for k in ("ts", "verdict", "expected_loss_pct", "baseline_loss_pct", "avoidable_loss_pct", "p_any",
-                                              "exit_cost_pct", "max_alert")}
+            "previous": {k: prev.get(k) for k in ("ts", "verdict", "expected_loss_pct", "baseline_loss_pct", "avoidable_loss_pct", "p_any",
+                                                  "yield_pct", "net_loss_pct", "exit_cost_pct", "max_alert")}
                         if prev else None,
             "events": events,
             "recorded": bool(record and self.history),
@@ -295,7 +300,7 @@ class RiskEngine:
             "findings": self.findings(g, paths),
             "assumptions": self.assumptions(mode, sev_mean, sev_kappa, horizon, n, ex, fixed_severity),
         }
-        result["explanation"] = explain(_clean(result)) if use_llm else None
+        result["explanation"] = explain(_clean(result), use_llm=use_llm)
         return _clean(result)
 
     def replay(self, position_id: str, incident_id: str, **kw) -> dict:
@@ -348,7 +353,19 @@ class RiskEngine:
                     out.append(f"{n.label}: {a['tracking_reason']} (feeds: {', '.join(a.get('feed_descriptions') or []) or 'none'})")
                 if n.type == "feed" and a.get("stale"):
                     out.append(f"Feed {n.label} last updated {int((a.get('age_s') or 0) / 3600)}h ago")
-                if n.type == "market":
+                if n.type == "asset" and a.get("collateral_elsewhere_usd"):
+                    venues = [g.nodes[e.target] for e in g.out_edges(n.id) if e.type == "liquidated_in"]
+                    blind = sum(not g.nodes[o.target].risk_factors.get("tracks_market")
+                                for v in venues for o in g.out_edges(v.id) if o.type == "priced_by")
+                    ratio = a.get("collateral_to_amm")
+                    other = " other" if g.nodes[g.root].attrs.get("kind") == "market" else ""
+                    out.append(f"{n.label}: ${a['collateral_elsewhere_usd']:,.0f} posted as collateral in {len(venues)}{other} lending market(s)"
+                               + (f", {ratio:.1f}x its AMM liquidity" if ratio else "")
+                               + f"; {blind} of them priced by an oracle that does not follow the PT's market price")
+                if n.type == "market" and a.get("role") == "collateral_venue":
+                    out.append(f"Collateral venue {n.label}: ${(a.get('collateral_usd') or 0):,.0f} posted against "
+                               f"${(a.get('borrow_usd') or 0):,.0f} borrowed at LLTV {(a.get('lltv') or 0):.1%}")
+                elif n.type == "market":
                     out.append(f"Market {n.label}: utilization {(a.get('utilization') or 0):.0%}, LLTV {(a.get('lltv') or 0):.1%}, "
                                f"idle liquidity ${(a.get('liquidity_usd') or 0):,.0f}, age {a.get('age_days')} days")
                 if n.type == "amm":
@@ -371,6 +388,8 @@ class RiskEngine:
             "While the chain is halted a held PT cannot be sold; its price drifts with the volatility of its asset class",
             "Borrowers sit at 70-97% of LLTV on average; liquidators prevent 30-80% of insolvency only when the oracle sees the move",
             "Over-borrowing drains up to 100% of idle market liquidity once LLTV x oracle over-pricing > 1",
+            "Liquidations in other markets holding the PT: 50-100% of the seized PT is sold into its Pendle AMM (constant-product impact); "
+            "the dip is capped where the PT would yield 50-200% APY to maturity, as arbitrageurs buy it back",
             "Probabilities: Gamma-Poisson base rates x risk-factor and contagion multipliers, then Bayesian update by the alert likelihood ratio",
         ]
         return a + ex.get("assumptions", [])
@@ -390,8 +409,8 @@ class RiskEngine:
                 a = self.analyze(req, h, record=True)
                 m = a["monitor"]
                 self.store.pop(a["position_id"], None)
-                out.append({"ok": True, **{k: m[k] for k in ("label", "position_key", "verdict", "expected_loss_pct", "exit_cost_pct",
-                                                             "max_alert", "regime")},
+                out.append({"ok": True, **{k: m[k] for k in ("label", "position_key", "verdict", "expected_loss_pct", "yield_pct",
+                                                             "net_loss_pct", "exit_cost_pct", "max_alert", "regime")},
                             "events": m["events"]})
             except Exception as e:  # noqa: BLE001 - keep monitoring the other positions
                 label = (it.get("label") or it.get("address") or "Invalid position") if isinstance(it, dict) else "Invalid position"

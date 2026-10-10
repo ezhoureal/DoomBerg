@@ -1,9 +1,14 @@
 import type {
   Analysis,
   Catalog,
+  Explanation,
+  MonitorEvent,
+  MonitorRun,
   PositionKind,
   Preset,
+  Schedule,
   ShockResult,
+  Watchlist,
 } from "./types";
 
 export class ApiError extends Error {
@@ -18,13 +23,14 @@ async function call<T>(
   path: string,
   body?: unknown,
   signal?: AbortSignal,
+  method?: "PUT" | "DELETE",
 ): Promise<T> {
   const r = await fetch(`/api${path}`, {
     signal,
     ...(body === undefined
-      ? {}
+      ? { method }
       : {
-          method: "POST",
+          method: method ?? "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         }),
@@ -71,4 +77,32 @@ export const api = {
     incident_id: string;
     exit_cost_override?: number | null;
   }) => call<ShockResult>("/replay", body),
+  explain: (result: ShockResult) =>
+    call<Explanation>("/explain", { result }),
+  monitor: {
+    watchlist: () => call<Watchlist>("/monitor/watchlist"),
+    watch: (body: {
+      kind: PositionKind;
+      address: string;
+      chain_id: number;
+      size_usd: number;
+      book_usd: number;
+      horizon_days: number;
+      label?: string | null;
+    }) => call<{ id: number; position_key: string }>("/monitor/watchlist", body),
+    unwatch: (id: number) =>
+      call<{ ok: boolean }>(`/monitor/watchlist/${id}`, undefined, undefined, "DELETE"),
+    schedule: () => call<Schedule>("/monitor/schedule"),
+    setSchedule: (interval_s: number) =>
+      call<Schedule>("/monitor/schedule", { interval_s }, undefined, "PUT"),
+    run: () => call<unknown[]>("/monitor/run", {}),
+    history: (positionKey: string, limit = 48) =>
+      call<MonitorRun[]>(
+        `/monitor/history?position_key=${encodeURIComponent(positionKey)}&limit=${limit}`,
+      ),
+    events: (positionKey: string, limit = 10) =>
+      call<MonitorEvent[]>(
+        `/monitor/events?position_key=${encodeURIComponent(positionKey)}&limit=${limit}`,
+      ),
+  },
 };

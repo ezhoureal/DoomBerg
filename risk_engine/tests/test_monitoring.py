@@ -143,6 +143,20 @@ def test_shock_auto_alert_uses_live_signals():
     assert auto["shock"]["alert"] == "alert" and auto["shock"]["alert_source"] == "signals"
     quiet = eng.shock(pid, "issuer", "issuer_default", use_llm=False, n=2000)
     assert quiet["shock"]["alert"] == "none"
+    assert auto["explanation"]["provider"] == "template" and auto["explanation"]["text"]
+
+
+def test_watchlist_and_settings_persist():
+    h = History(":memory:")
+    item = {"kind": "token", "address": " 0xPT ", "chain_id": 1, "size_usd": 1e6, "book_usd": 1e7, "horizon_days": 30, "label": "PT"}
+    wid = h.add_watch(item, "k1")
+    assert h.add_watch({**item, "label": "PT renamed"}, "k1") == wid  # same position: updated, not duplicated
+    assert [(w["id"], w["address"], w["label"]) for w in h.watchlist()] == [(wid, "0xPT", "PT renamed")]
+    assert h.remove_watch(wid) and not h.remove_watch(wid) and h.watchlist() == []
+    assert h.setting("monitor_interval_s", 0) == 0
+    h.set_setting("monitor_interval_s", 3600)
+    h.set_setting("monitor_interval_s", 900)
+    assert h.setting("monitor_interval_s") == 900
 
 
 def test_contagion_from_recent_failure_decays():

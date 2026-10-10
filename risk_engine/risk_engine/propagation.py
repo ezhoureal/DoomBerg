@@ -11,10 +11,13 @@ Nodes are evaluated dependencies-first; each edge type has a transmission rule.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import numpy as np
 
+from .exit_cost import amm_impact
 from .failures import asset_vol, severity_prior
 from .graph import DependencyGraph
 
@@ -24,6 +27,7 @@ TRANSMISSION = {
     "mintable_by": "unbacked minting dilutes every holder",
     "bridged_via": "a bridged copy is only as good as the bridge's locked collateral",
     "traded_on": "the PT is priced and exited through this AMM",
+    "liquidated_in": "liquidations of this collateral are sold into the PT's AMM, pushing its price down",
     "collateral_in": "PT value drop -> under-water loans -> bad debt for lenders",
     "priced_by": "wrong or frozen oracle -> over-borrowing or failed liquidations",
     "reads_feed": "the oracle passes on whatever its feed reports",
@@ -38,6 +42,17 @@ TRANSMISSION = {
 
 def _combine(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return 1.0 - (1.0 - a) * (1.0 - b)
+
+
+def _years_to(expiry: str | None) -> float:
+    """Years until a ``YYYY-MM-DD`` expiry; one year when unknown, so the arbitrage bound stays finite."""
+    if not expiry:
+        return 1.0
+    try:
+        t = datetime.strptime(expiry[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return 1.0
+    return max(t - time.time(), 0.0) / (365 * 86400)
 
 
 @dataclass
@@ -130,6 +145,8 @@ class Simulator:
                 for e in outs:
                     if e.type in ("backed_by", "issued_by", "mintable_by", "bridged_via", "traded_on"):
                         loss = _combine(loss, get(L, e.target))
+                if any(e.type == "liquidated_in" for e in outs):
+                    loss = _combine(loss, self._fire_sale(outs, loss, OE, ST, FZ, n))
 
             elif t == "market":
                 loss = self._market(node, outs, L, OE, ST, frozen, mode, n)
@@ -150,6 +167,38 @@ class Simulator:
 
             L[nid], OE[nid], ST[nid], FZ[nid] = loss, oerr, stale, frozen
         return SimResult(L, OE, ST, FZ, sev)
+
+    def _fire_sale(self, outs, drop, OE, ST, FZ, n) -> np.ndarray:
+        """PT price dip from liquidations in the lending markets that hold it, sold into its Pendle AMM.
+
+        A venue liquidates when its oracle shows a lower price: it under-prices the PT, or it tracks the
+        market and sees ``drop`` (the PT's loss from everything else). Arbitrage to maturity bounds the dip:
+        nobody sells a sound PT below the price that yields ``apy_stress`` until it redeems.
+        """
+        rng, g = self.rng, self.g
+        z = np.zeros(n)
+        amm = next((g.nodes[e.target] for e in outs if e.type == "traded_on"), None)
+        depth = (amm.attrs.get("liquidity_usd") if amm else None) or 0.0
+        tau = _years_to(amm.attrs.get("expiry") if amm else None)
+        if depth <= 0 or tau <= 0:
+            return z  # no pool to sell into is an exit problem (exit_cost); an expired PT redeems 1:1
+        sold = z
+        for e in outs:
+            if e.type != "liquidated_in":
+                continue
+            v = g.nodes[e.target]
+            orc = next((x.target for x in self.outs[v.id] if x.type == "priced_by"), None)
+            tracks = bool(g.nodes[orc].risk_factors.get("tracks_market")) if orc else False
+            seen = (1.0 - (drop if tracks else 0.0)) * (1.0 + OE.get(orc, z))
+            s = np.clip(1.0 - seen, 0.0, 1.0)
+            # Borrowers sit at LTV/LLTV ~ U(0.70, 0.97), as in _market: those above 1 - s are liquidated.
+            share = np.clip((0.97 - (1.0 - s)) / 0.27, 0.0, 1.0)
+            share = np.where((ST.get(orc, z) > 0) | (FZ.get(v.id, z) > 0), 0.0, share)  # nobody can liquidate
+            lltv = v.attrs.get("lltv") or 0.86
+            backing = min(v.attrs.get("collateral_usd") or 0.0, (v.attrs.get("borrow_usd") or 0.0) / (lltv * 0.835))
+            sold = sold + backing * share * rng.uniform(0.5, 1.0, n)  # some liquidators keep the PT to maturity
+        cap = 1.0 - (1.0 + rng.uniform(0.5, 2.0, n)) ** (-tau)
+        return np.minimum(amm_impact(sold, depth), cap)
 
     def _market(self, node, outs, L, OE, ST, frozen, mode, n) -> np.ndarray:
         """Lender-side loss of a Morpho market as a fraction of supplied assets."""

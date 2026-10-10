@@ -12,6 +12,7 @@ import {
   FileText,
   RefreshCw,
   LayoutList,
+  Activity,
 } from "lucide-react";
 import { api, ApiError } from "../api";
 import type { Analysis, Catalog, ShockResult } from "../types";
@@ -48,6 +49,7 @@ export default function InvestmentWorkspace({
   onScenario,
   onInvalid,
   onOverview,
+  onMonitor,
   saveError,
   notice,
   onDismissNotice,
@@ -71,6 +73,7 @@ export default function InvestmentWorkspace({
   onScenario: (record: ScenarioRecord) => void;
   onInvalid: () => void;
   onOverview: () => void;
+  onMonitor: () => void;
   saveError: string | null;
   notice: string | null;
   onDismissNotice: () => void;
@@ -287,6 +290,10 @@ export default function InvestmentWorkspace({
             Investment overview
           </button>
         )}
+        <button className="nav-item overview-link" onClick={onMonitor}>
+          <Activity size={16} />
+          Scheduled monitoring
+        </button>
         {investmentTabs}
         <div className="nav-footer">
           <Shield size={15} />
@@ -591,8 +598,8 @@ export default function InvestmentWorkspace({
                 ))}
                 <p>
                   Unavailable or inferred dependencies require verification.
-                  This workspace evaluates scenarios; it does not continuously
-                  monitor or execute trades.
+                  This workspace evaluates scenarios and never executes trades.
+                  Recurring STAY / EXIT checks run from Scheduled monitoring.
                 </p>
               </div>
             </details>

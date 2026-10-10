@@ -44,12 +44,13 @@ export type Monitor = {
   data_issues?: { node_id: string; label: string; fields: string[]; detail: string }[];
   decision_rule?: string; execution_status?: "blocked" | "available";
   expected_loss_pct: number; baseline_loss_pct: number; excess_loss_pct: number; avoidable_loss_pct: number;
+  yield_pct: number; net_loss_pct: number;
   exit_cost_pct: number; instant_fraction: number; max_alert: AlertLevel; regime: "calm" | "elevated" | "stressed"; contagion_max: number;
   signals: Signal[];
   alerts: { node_id: string; label: string; mode: string; mode_label: string; level: AlertLevel; signals: Signal[] }[];
   above_break_even: { node_id: string; label: string; mode: string; mode_label: string; p: number; break_even_p: number; alert: AlertLevel }[];
   previous: { ts: number; verdict: "STAY" | "EXIT" | "REVIEW"; expected_loss_pct: number; baseline_loss_pct: number; avoidable_loss_pct: number;
-    p_any: number; exit_cost_pct: number; max_alert: AlertLevel } | null;
+    p_any: number; yield_pct: number | null; net_loss_pct: number | null; exit_cost_pct: number; max_alert: AlertLevel } | null;
   events: MonitorEvent[];
   recorded: boolean;
 };
@@ -91,7 +92,40 @@ export type ShockResult = {
   node_losses: Record<string, number>;
   findings: string[];
   assumptions: string[];
-  explanation: { text: string; provider: string; model: string | null; error: string | null } | null;
+  explanation: Explanation | null;
+};
+
+export type Explanation = { text: string; provider: string; model: string | null; error: string | null };
+
+export type Verdict = "STAY" | "EXIT" | "REVIEW";
+
+export type MonitorRun = {
+  id: number; ts: number; position_key: string; label: string | null; kind: PositionKind; address: string; chain_id: number;
+  size_usd: number; horizon_days: number; verdict: Verdict; expected_loss_pct: number; baseline_loss_pct: number;
+  avoidable_loss_pct: number; p_any: number; exit_cost_pct: number; instant_fraction: number; max_alert: AlertLevel; contagion: number | null;
+  // Null on runs recorded before the yield credit; there the verdict compared avoidable_loss_pct.
+  yield_pct: number | null; net_loss_pct: number | null;
+};
+
+export const netLoss = (r: { avoidable_loss_pct: number; net_loss_pct: number | null }) =>
+  r.net_loss_pct ?? r.avoidable_loss_pct;
+
+export type WatchItem = {
+  id: number | null; kind: PositionKind; address: string; chain_id: number; size_usd: number; book_usd: number | null;
+  horizon_days: number | null; label: string | null; position_key: string | null; error: string | null;
+  latest: (MonitorRun & {
+    model_verdict: "STAY" | "EXIT" | null;
+    data_issues: { node_id: string; label: string; fields: string[]; detail: string }[];
+    drivers: { node_id: string; mode: string; label: string; mode_label: string; p: number; break_even_p: number | null;
+      above: boolean; alert: AlertLevel; el: number; signals: string[] }[];
+  }) | null;
+};
+
+export type Watchlist = { source: "saved" | "file" | "presets"; items: WatchItem[] };
+
+export type Schedule = {
+  interval_s: number; min_interval_s: number; running: boolean; last_run: number | null; next_run: number | null;
+  watchlist_source: Watchlist["source"];
 };
 
 export type Summary = { mean: number; p05: number; p50: number; p95: number; p99: number; prob_any_loss: number };

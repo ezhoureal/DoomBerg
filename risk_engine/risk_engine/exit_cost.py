@@ -1,8 +1,8 @@
 """Stage 3 - Price the exit at the real position size, now and under stress.
 
 Exit plan:
-  - Held PT: sell it, priced with a live KyberSwap quote at size (else a live quote on its Pendle market,
-    with aggregator routing into a distinct USDC/USDT destination), widened by a stress multiplier because liquidity providers pull
+  - Held PT: sell it at the cheaper of a live KyberSwap quote at size and a live quote on its Pendle market
+    (aggregator routing into a distinct USDC/USDT destination), widened by a stress multiplier because liquidity providers pull
     out during incidents. An unconfirmed route receives zero immediate loss-avoidance credit.
     Forgone fixed PT yield while the capital is redeployed.
   - Market supply: withdraw, limited by instant liquidity; during an incident other lenders race for
@@ -21,8 +21,8 @@ from .sources.pricing import swap_quote, exit_token, output_value_usd, USDC
 GAS_USD = 40.0
 
 
-def _amm_impact(size: float, depth: float) -> float:
-    """Constant-product price impact for selling ``size`` into a pool of total depth ``depth``."""
+def amm_impact(size, depth: float):
+    """Constant-product price impact for selling ``size`` (a number or an array) into a pool of total depth ``depth``."""
     if depth <= 0:
         return 0.5
     half = depth / 2
@@ -44,17 +44,18 @@ def quote_asset_sale(g: DependencyGraph, asset_id: str, size: float) -> dict:
         pending.extend(e.target for e in g.out_edges(nid) if e.type == "backed_by")
     token_out = exit_token(a.address or "", a.chain_id or 1, backing_addresses)
     price = a.attrs.get("price_usd")
+    # A seller takes the cheapest executable route: an aggregator can return a valid but terrible quote
+    # through thin pools while the PT's own Pendle market is deep.
+    routes = []
     if a.address and price and token_out:
         q = swap_quote(a.address, int(a.attrs.get("decimals") or 18), size, price, a.chain_id or 1, token_out=token_out)
         if q:
             out = "USDC" if token_out.lower() == USDC.get(a.chain_id or 1, "").lower() else "USDT"
-            return {"impact": q["price_impact"], "source": "kyberswap",
-                    "detail": f"Live KyberSwap route: sell ${size:,.0f} of {a.label} -> ${q['amount_out_usd']:,.0f} {out} "
-                              f"({q['price_impact']:.2%} impact, gas ${q['gas_usd']:.2f})"}
-    for e in g.out_edges(asset_id):
-        if e.type != "traded_on":
-            continue
-        amm = g.nodes[e.target]
+            routes.append({"impact": q["price_impact"], "source": "kyberswap",
+                           "detail": f"Live KyberSwap route: sell ${size:,.0f} of {a.label} -> ${q['amount_out_usd']:,.0f} {out} "
+                                     f"({q['price_impact']:.2%} impact, gas ${q['gas_usd']:.2f})"})
+    amms = [g.nodes[e.target] for e in g.out_edges(asset_id) if e.type == "traded_on"]
+    for amm in amms:
         decimals = a.attrs.get("decimals")
         if a.address and amm.address and token_out and price and decimals is not None:
             q = pendle.swap_quote(amm.address, a.address, token_out, int(size / price * 10 ** int(decimals)), a.chain_id or 1)
@@ -62,12 +63,20 @@ def quote_asset_sale(g: DependencyGraph, asset_id: str, size: float) -> dict:
                 proceeds = output_value_usd(token_out, q["amount_out"], a.chain_id or 1)
                 if proceeds is not None:
                     imp = max(0.0, 1.0 - (proceeds - GAS_USD) / size)
-                    return {"impact": imp, "source": "pendle-api",
-                            "detail": f"Live Pendle route on {amm.label}: sell ${size:,.0f} of {a.label} into USDC/USDT "
-                                      f"worth ${proceeds:,.0f}; fees included in proceeds, gas assumed ${GAS_USD:,.0f} ({imp:.2%} cost)"}
+                    routes.append({"impact": imp, "source": "pendle-api",
+                                   "detail": f"Live Pendle route on {amm.label}: sell ${size:,.0f} of {a.label} into USDC/USDT "
+                                             f"worth ${proceeds:,.0f}; fees included in proceeds, gas assumed ${GAS_USD:,.0f} ({imp:.2%} cost)"})
+    if routes:
+        best = min(routes, key=lambda r: r["impact"])
+        others = [r for r in routes if r is not best]
+        if others:
+            best = {**best, "detail": best["detail"] + "; cheapest of " + ", ".join(
+                f"{r['source']} {r['impact']:.2%}" for r in [best, *others])}
+        return best
+    for amm in amms:
         liq = amm.attrs.get("liquidity_usd")
         if liq is not None:
-            imp = _amm_impact(size, liq)
+            imp = amm_impact(size, liq)
             return {"impact": imp, "source": "assumption", "available": False,
                     "detail": f"Constant-product estimate on {amm.label} (liquidity ${liq:,.0f}): {imp:.2%}. "
                               "No complete route into USDC/USDT was confirmed; this estimate is not an executable exit"}
@@ -132,6 +141,8 @@ def exit_cost(g: DependencyGraph, size: float, rng: np.random.Generator, stresse
         "instant_fraction": float(instant_frac.mean()),
         "instant_fraction_calm": float(min(1.0, (target.attrs.get("liquidity_usd") or 0) / size)) if target.type == "market" else float(instant_frac.mean()),
         "stressed": stressed,
+        "apy": apy,
+        "redeploy_days": redeploy_days,
         "steps": steps,
         "assumptions": assumptions,
         "samples": cost,

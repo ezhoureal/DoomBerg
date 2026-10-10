@@ -47,6 +47,20 @@ def test_baseline_risk_still_justifies_exit():
     assert row['break_even_p'] == pytest.approx(.02)
 
 
+def test_yield_given_up_offsets_background_risk():
+    row = dict(node_id='market', label='Market', mode='liquidity_drain', mode_label='Run',
+               p=.01, base_p=.01, loss_given_failure=.5, expected_loss_pct=.005, alert='none', signals=[])
+    screening = {'rows': [row], 'total_expected_loss_pct': .005, 'p_any_loss_event': .01}
+    paid = RiskEngine().monitor(complete_graph(), REQUEST, 37, screening,
+                                {'cost_pct': .001, 'instant_fraction': 1, 'apy': .0365, 'redeploy_days': 7}, [], {}, {}, False, NOW)
+    # 3.65% APY over the 30 days not already charged in the exit cost = 0.3% credit.
+    assert paid['yield_pct'] == pytest.approx(.003)
+    assert paid['net_loss_pct'] == pytest.approx(.002) and paid['verdict'] == 'EXIT'
+    unpaid = RiskEngine().monitor(complete_graph(), REQUEST, 37, screening,
+                                  {'cost_pct': .0025, 'instant_fraction': 1, 'apy': .0365, 'redeploy_days': 7}, [], {}, {}, False, NOW)
+    assert unpaid['verdict'] == 'STAY'  # 0.2% net < 0.25% exit, though 0.5% gross > 0.25%
+
+
 def test_propagated_feed_warning_has_one_forecast_and_episode():
     g = complete_graph()
     add_feed(g)
@@ -109,7 +123,7 @@ def test_watchlist_validates_each_entry_without_stopping(monkeypatch):
     def fake_analyze(req, horizon, **kw):
         calls.append(req.address)
         return {'position_id': 'id', 'monitor': dict(label='Valid', position_key='key', verdict='STAY',
-                expected_loss_pct=.01, exit_cost_pct=.1, max_alert='none', regime='calm', events=[])}
+                expected_loss_pct=.01, yield_pct=0, net_loss_pct=.01, exit_cost_pct=.1, max_alert='none', regime='calm', events=[])}
     monkeypatch.setattr(engine, 'analyze', fake_analyze)
     result = engine.run_watchlist([None, {'label': 'Missing address'}, {'address': 'a', 'size_usd': 'bad'},
                                    {'address': 'a', 'size_usd': float('nan')}, {'address': 'a', 'horizon_days': -1},

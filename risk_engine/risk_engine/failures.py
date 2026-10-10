@@ -56,6 +56,9 @@ DEPEG_PRIORS: dict[str, dict] = {
     "wrapped_btc":      {"k": 2, "T": 25, "sev": (0.10, 5), "vol": 0.55},
     "gold":             {"k": 0, "T": 15, "sev": (0.05, 10), "vol": 0.18},
     "pt":               {"k": 2, "T": 40, "sev": (0.10, 6), "vol": 0.08},
+    # Own-risk of a share/staked wrapper (sUSDe, wstETH): discount to its underlying during a cooldown or
+    # redemption queue. The underlying's depeg is its own node and reaches the wrapper through backed_by.
+    "wrapper":          {"k": 2, "T": 40, "sev": (0.10, 6), "vol": 0.08},
     "volatile":         {"k": 4, "T": 30, "sev": (0.30, 3), "vol": 0.90},
     "unknown":          {"k": 6, "T": 40, "sev": (0.30, 3), "vol": 0.30},
 }
@@ -81,6 +84,10 @@ CHAIN_HALT = {  # (k, T, mean hours)
 
 def applicable_modes(node_type: str, node_attrs: dict | None = None) -> list[FailureMode]:
     attrs = node_attrs or {}
+    if node_type == "market" and attrs.get("role") == "collateral_venue":
+        # A run on another market's lenders does not hurt a PT holder; that market reaches the PT
+        # through its oracle (wrong or stale price) and the liquidations it triggers.
+        return []
     out = []
     for m in MODES.values():
         if node_type not in m.applies_to:
@@ -89,6 +96,11 @@ def applicable_modes(node_type: str, node_attrs: dict | None = None) -> list[Fai
             continue
         out.append(m)
     return out
+
+
+def depeg_class(attrs: dict) -> str:
+    kind = attrs.get("kind", "unknown")
+    return "wrapper" if attrs.get("wraps") and kind != "pt" else kind
 
 
 def _below(value: float | None, limit: float) -> bool:
@@ -105,9 +117,14 @@ def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[floa
     """
     reasons: list[str] = []
     if mode == "depeg":
-        p = DEPEG_PRIORS.get(attrs.get("kind", "unknown"), DEPEG_PRIORS["unknown"])
+        cls = depeg_class(attrs)
+        p = DEPEG_PRIORS.get(cls, DEPEG_PRIORS["unknown"])
         k, T = p["k"], p["T"]
-        reasons.append(f"base rate for {attrs.get('kind', 'unknown')} tokens: {k} events / {T} token-years")
+        if cls == "wrapper":
+            reasons.append(f"base rate for wrapper discounts: {k} events / {T} token-years; "
+                           f"a {attrs['wraps']} depeg is modelled on its own node")
+        else:
+            reasons.append(f"base rate for {cls} tokens: {k} events / {T} token-years")
     elif mode == "chain_halt":
         k, T, _ = CHAIN_HALT.get(attrs.get("chain_class", "l1"), CHAIN_HALT["l1"])
         reasons.append(f"halts for {attrs.get('chain_class', 'l1')}: {k} / {T} chain-years")
@@ -192,11 +209,15 @@ def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[floa
 def severity_prior(mode: str, node_type: str, attrs: dict) -> tuple[float, float]:
     """(mean, kappa) of a Beta over loss fraction; kappa == 0 means an exponential in hours."""
     if mode == "depeg":
-        return DEPEG_PRIORS.get(attrs.get("kind", "unknown"), DEPEG_PRIORS["unknown"])["sev"]
+        return DEPEG_PRIORS.get(depeg_class(attrs), DEPEG_PRIORS["unknown"])["sev"]
     if mode == "chain_halt":
         return (CHAIN_HALT.get(attrs.get("chain_class", "l1"), CHAIN_HALT["l1"])[2], 0)
     if mode == "exploit" and attrs.get("immutable_core"):
         return (0.30, 2.5)
+    if mode == "unbacked_mint" and attrs.get("issuer_tier") == "regulated":
+        # The key risk is real (Paxos's single key minted $300T PYUSD in Oct 2025), but a regulated issuer
+        # can blacklist and burn the excess and redeem holders from audited reserves: it burned it in 22 minutes.
+        return (0.10, 4)
     return BASE[mode]["sev"]
 
 

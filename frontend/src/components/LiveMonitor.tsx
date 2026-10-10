@@ -35,9 +35,10 @@ export default function LiveMonitor({
            m.alerts.length ? `${m.alerts.length} active alert${m.alerts.length > 1 ? "s" : ""}` : "No active alerts"} · {m.regime}
         </span>
       </div>
-      <p className="live-note" title="The calculation includes base-rate risk and signal updates; no yield compensation is assumed.">
+      <p className="live-note" title="Expected loss includes base-rate risk and signal updates. Staying is credited with the position's yield over the horizon, less the days already charged in the exit cost.">
         {m.data_status === "incomplete" ? "Provisional estimate: " : ""}
-        {pct(m.avoidable_loss_pct, 2)} avoidable expected loss vs {pct(m.exit_cost_pct, 2)} to exit
+        ({pct(m.expected_loss_pct, 2)} expected loss − {pct(m.yield_pct, 2)} yield) × {pct(m.instant_fraction, 0)} withdrawable ={" "}
+        {pct(m.net_loss_pct, 2)} vs {pct(m.exit_cost_pct, 2)} to exit
       </p>
       {m.data_issues && m.data_issues.length > 0 && (
         <details className="live-note">
@@ -59,7 +60,7 @@ export default function LiveMonitor({
       ))}
       {prev && (
         <p className="live-note">
-          Last recorded run {ago(prev.ts)}: {prev.verdict}, expected loss {pct(prev.expected_loss_pct, 2)} → now {pct(m.expected_loss_pct, 2)}
+          Last recorded run {ago(prev.ts)}: {prev.verdict}, net loss {pct(prev.net_loss_pct ?? prev.avoidable_loss_pct, 2)} → now {pct(m.net_loss_pct, 2)}
         </p>
       )}
     </div>

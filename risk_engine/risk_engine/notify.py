@@ -23,6 +23,12 @@ def _row_key(r: dict) -> str:
     return f"{r['node_id']}|{r['mode']}"
 
 
+def _net(run: dict) -> float:
+    """The quantity the verdict compares with the exit cost; runs recorded before the yield credit lack it."""
+    net = run.get("net_loss_pct")
+    return run["avoidable_loss_pct"] if net is None else net
+
+
 def diff(prev: dict | None, cur: dict, now: float) -> list[dict]:
     """Events between the previous run (``History.last_run``) and the current run dict."""
     base = {"ts": now, "position_key": cur["position_key"], "label": cur.get("label")}
@@ -34,12 +40,12 @@ def diff(prev: dict | None, cur: dict, now: float) -> list[dict]:
 
     if prev is None:
         if cur["verdict"] == "EXIT":
-            add("verdict", "critical", f"First screening says EXIT: {cur['avoidable_loss_pct']:.2%} avoidable "
-                                       f"expected loss > exit cost {cur['exit_cost_pct']:.2%}")
+            add("verdict", "critical", f"First screening says EXIT: avoidable expected loss net of yield {_net(cur):.2%} "
+                                       f"> exit cost {cur['exit_cost_pct']:.2%}")
     elif prev["verdict"] != cur["verdict"]:
         add("verdict", "critical" if cur["verdict"] == "EXIT" else "warning" if cur["verdict"] == "REVIEW" else "info",
-            f"Verdict flipped {prev['verdict']} -> {cur['verdict']}: avoidable expected loss {cur['avoidable_loss_pct']:.2%} "
-            f"vs exit cost {cur['exit_cost_pct']:.2%} (was {prev['avoidable_loss_pct']:.2%} vs {prev['exit_cost_pct']:.2%})",
+            f"Verdict flipped {prev['verdict']} -> {cur['verdict']}: avoidable expected loss net of yield {_net(cur):.2%} "
+            f"vs exit cost {cur['exit_cost_pct']:.2%} (was {_net(prev):.2%} vs {prev['exit_cost_pct']:.2%})",
             before=prev["verdict"], after=cur["verdict"])
 
     missing = cur.get("summary", {}).get("data_issues", [])

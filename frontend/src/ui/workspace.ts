@@ -90,6 +90,7 @@ export function relationLabel(type: string): string {
     issued_by: "Issued by",
     mintable_by: "Token controls",
     traded_on: "Traded on",
+    liquidated_in: "Collateral in",
     runs_on: "Runs on",
     settles_on: "Settles on",
     holds: "Holds",

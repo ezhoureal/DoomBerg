@@ -764,6 +764,45 @@ p {
   color: #396b58;
   background: #edf4ee;
 }
+.decision-tag.review {
+  color: #886325;
+  background: #fbf1dd;
+}
+.monitor-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 4px;
+  font-size: 12px;
+}
+.monitor-controls select {
+  margin-left: 6px;
+}
+.monitor-controls .overview-note {
+  margin: 0;
+}
+.monitor-table {
+  max-height: 60vh;
+}
+.monitor-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  padding: 4px 0 8px;
+}
+.monitor-chart {
+  height: 160px;
+  margin-bottom: 10px;
+}
+.ai-summary {
+  margin-top: 12px;
+}
+@media (max-width: 800px) {
+  .monitor-details {
+    grid-template-columns: 1fr;
+  }
+}
 .scenario-history {
   border: 1px solid var(--line);
   border-radius: 6px;

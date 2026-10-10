@@ -31,6 +31,7 @@ EDGE_TYPES = (
     "mintable_by",      # asset -> mint authority
     "bridged_via",      # asset -> bridge
     "traded_on",        # PT -> Pendle AMM market
+    "liquidated_in",    # PT -> lending market where it is posted (liquidations are sold into its AMM)
     "runs_on",          # market / amm -> protocol code
     "settles_on",       # anything -> chain
 )

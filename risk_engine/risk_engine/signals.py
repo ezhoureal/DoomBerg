@@ -80,6 +80,9 @@ def data_issues(g: DependencyGraph) -> list[dict]:
             checks = {"answer": valid(a.get("answer"), True), "age_s": valid(a.get("age_s"))}
         elif node.type == "asset":
             checks = {"price_usd": valid(a.get("price_usd"), True)}
+        elif node.type == "market" and a.get("role") == "collateral_venue":
+            # The inputs that size the liquidations sold into the PT's AMM.
+            checks = {k: valid(a.get(k)) for k in ("collateral_usd", "borrow_usd")}
         elif node.type == "market":
             checks = {k: valid(a.get(k)) for k in ("utilization", "supply_usd", "liquidity_usd")}
             checks["utilization"] = checks["utilization"] and a["utilization"] <= 1
@@ -164,16 +167,20 @@ def detect(g: DependencyGraph, now: float, history: MetricHistory | None = None)
                 fire(n, "oracle_wrong_price", "oracle_dex_gap", gap,
                      f"{n.label} reads {a.get('oracle_price'):,.4f} vs market {a.get('market_price'):,.4f} ({gap:+.2%})")
         elif n.type == "market":
+            dpv = a.get("daily_price_variation")
+            coll = next((g.nodes[e.target] for e in g.out_edges(n.id) if e.type == "collateral_in"), None)
+            if coll is None and a.get("role") == "collateral_venue":
+                coll = next((g.nodes[e.source] for e in g.in_edges(n.id) if e.type == "liquidated_in"), None)
+            if coll is not None and dpv is not None:
+                fire(coll, "depeg", "collateral_drop", -dpv, f"{coll.label} oracle price moved {dpv:+.2%} over 24h ({n.label})")
+            if a.get("role") == "collateral_venue":
+                continue  # its lenders' liquidity is not a failure mode of the PT holder
             util = a.get("utilization")
             fire(n, "liquidity_drain", "utilization_pinned", util, f"{n.label} utilization {(util or 0):.1%}")
             supply = a.get("supply_usd")
             bad = a.get("bad_debt_usd")
             if bad and supply:
                 fire(n, "liquidity_drain", "bad_debt", bad / supply, f"{n.label} carries ${bad:,.0f} unrealized bad debt")
-            dpv = a.get("daily_price_variation")
-            coll = next((g.nodes[e.target] for e in g.out_edges(n.id) if e.type == "collateral_in"), None)
-            if coll is not None and dpv is not None:
-                fire(coll, "depeg", "collateral_drop", -dpv, f"{coll.label} oracle price moved {dpv:+.2%} over 24h ({n.label})")
             peak = change(n.id, "supply_usd", supply, max)
             if peak:
                 out = 1 - supply / peak

@@ -63,11 +63,12 @@ def build_context(result: dict) -> dict:
     }
 
 
-def explain(result: dict) -> dict:
+def explain(result: dict, use_llm: bool = True) -> dict:
+    """Narrative for a shock result. ``use_llm=False`` skips the network call and returns the template."""
     ctx = build_context(result)
     text, provider, model, error = None, "template", None, None
     try:
-        if os.getenv("OPENAI_API_KEY"):
+        if use_llm and os.getenv("OPENAI_API_KEY"):
             model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
             base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
             r = httpx.post(f"{base}/chat/completions", timeout=40,
@@ -77,7 +78,7 @@ def explain(result: dict) -> dict:
                                               {"role": "user", "content": json.dumps(ctx, default=float)}]})
             r.raise_for_status()
             text, provider = r.json()["choices"][0]["message"]["content"], "openai"
-        elif os.getenv("ANTHROPIC_API_KEY"):
+        elif use_llm and os.getenv("ANTHROPIC_API_KEY"):
             model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
             r = httpx.post("https://api.anthropic.com/v1/messages", timeout=40,
                            headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"},

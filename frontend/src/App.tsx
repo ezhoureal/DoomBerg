@@ -15,6 +15,7 @@ import PositionForm from "./components/PositionForm";
 import InvestmentWorkspace from "./components/InvestmentWorkspace";
 import InvestmentTabs from "./components/InvestmentTabs";
 import InvestmentOverview from "./components/InvestmentOverview";
+import MonitorPanel from "./components/MonitorPanel";
 import {
   BACKUP_KEY,
   parseWorkspace,
@@ -47,6 +48,7 @@ const WorkspaceTab = memo(function WorkspaceTab({
   onAdd,
   dispatch,
   onOverview,
+  onMonitor,
   saveError,
   notice,
   onDismissNotice,
@@ -59,6 +61,7 @@ const WorkspaceTab = memo(function WorkspaceTab({
   onAdd: () => void;
   dispatch: Dispatch<InvestmentsAction>;
   onOverview: () => void;
+  onMonitor: () => void;
   saveError: string | null;
   notice: string | null;
   onDismissNotice: () => void;
@@ -104,6 +107,7 @@ const WorkspaceTab = memo(function WorkspaceTab({
         onScenario={onScenario}
         onInvalid={onInvalid}
         onOverview={onOverview}
+        onMonitor={onMonitor}
         saveError={saveError}
         notice={notice}
         onDismissNotice={onDismissNotice}
@@ -168,6 +172,7 @@ export default function App() {
   const [restoreNotice, setRestoreNotice] = useState(loaded.error);
   const onDismissNotice = useCallback(() => setRestoreNotice(null), []);
   const [overviewOpen, setOverviewOpen] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
   const [positionOpen, setPositionOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -178,6 +183,7 @@ export default function App() {
     setPositionOpen(true);
   }, []);
   const onOverview = useCallback(() => setOverviewOpen(true), []);
+  const onMonitor = useCallback(() => setMonitorOpen(true), []);
   // Investments closed here, saved so other open tabs drop them on merge.
   const closed = useRef(new Set(loaded.closed));
   // Start from what was loaded, so mounting doesn't rewrite unchanged data.
@@ -315,6 +321,7 @@ export default function App() {
           onScenario={noop}
           onInvalid={noop}
           onOverview={onOverview}
+          onMonitor={onMonitor}
           saveError={saveError}
           notice={restoreNotice}
           onDismissNotice={onDismissNotice}
@@ -331,11 +338,20 @@ export default function App() {
           onAdd={onAdd}
           dispatch={dispatch}
           onOverview={onOverview}
+          onMonitor={onMonitor}
           saveError={saveError}
           notice={restoreNotice}
           onDismissNotice={onDismissNotice}
         />
       ))}
+      <MonitorPanel
+        open={monitorOpen}
+        current={
+          investments.items.find((i) => i.id === investments.activeId)
+            ?.analysis ?? null
+        }
+        onClose={() => setMonitorOpen(false)}
+      />
       <InvestmentOverview
         open={overviewOpen}
         items={investments.items}

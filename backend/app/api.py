@@ -17,7 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from risk_engine import PositionRequest, RiskEngine, calibration
-from risk_engine.engine import INCIDENTS, PRESETS
+from risk_engine.engine import INCIDENTS, PRESETS, position_key
+from risk_engine.explain import explain
 from risk_engine.failures import MODES
 from risk_engine.history import History
 from risk_engine.probability import ALERT_LEVELS
@@ -40,10 +41,25 @@ history = History(os.getenv("HISTORY_DB") or BACKEND / "data" / "history.sqlite3
 engine = RiskEngine(history=history)
 
 
-def load_watchlist() -> list[dict]:
-    """Positions screened on schedule: the JSON list at WATCHLIST (shaped like the presets), else the presets."""
+def load_watchlist() -> tuple[list[dict], str]:
+    """Positions screened on schedule: the saved watchlist, else the JSON list at WATCHLIST, else the presets."""
+    saved = history.watchlist()
+    if saved:
+        return saved, "saved"
     path = os.getenv("WATCHLIST")
-    return json.loads(Path(path).read_text(encoding="utf-8")) if path else PRESETS
+    if path:
+        return json.loads(Path(path).read_text(encoding="utf-8")), "file"
+    return PRESETS, "presets"
+
+
+def watch_key(it: dict) -> str | None:
+    """The ``position_key`` ``run_watchlist`` records this entry under (same defaults)."""
+    try:
+        req = PositionRequest(it.get("kind", "token"), it["address"], int(it.get("chain_id", 1)),
+                              float(it.get("size_usd", 1_000_000)), float(it.get("book_usd", 10_000_000)), it.get("label"))
+        return position_key(req, float(it.get("horizon_days", 30)))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
 
 
 class AnalyzeBody(BaseModel):
@@ -65,14 +81,18 @@ class ShockBody(BaseModel):
     probability_override: float | None = Field(None, ge=0, le=1)
     exit_cost_override: float | None = Field(None, ge=0, le=1)
     horizon_days: float | None = Field(None, gt=0, le=365)
-    use_llm: bool = True
+    use_llm: bool = False  # the UI asks for the LLM narrative separately, through /api/explain
 
 
 class ReplayBody(BaseModel):
     position_id: str
     incident_id: str
     exit_cost_override: float | None = Field(None, ge=0, le=1)
-    use_llm: bool = True
+    use_llm: bool = False
+
+
+class ExplainBody(BaseModel):
+    result: dict  # a /api/shock or /api/replay response
 
 
 class ModesBody(BaseModel):
@@ -93,6 +113,20 @@ class MonitorRunBody(BaseModel):
     horizon_days: float = Field(30, gt=0, le=365)
 
 
+class WatchBody(BaseModel):
+    kind: Literal["token", "market"] = "token"
+    address: str = Field(min_length=1)
+    chain_id: int = Field(1, gt=0)
+    size_usd: float = Field(1_000_000, gt=0)
+    book_usd: float = Field(10_000_000, gt=0)
+    horizon_days: float = Field(30, gt=0, le=365)
+    label: str | None = None
+
+
+class ScheduleBody(BaseModel):
+    interval_s: float = Field(ge=0, le=7 * 86400)  # 0 pauses the schedule
+
+
 def _llm_provider() -> str:
     if os.getenv("OPENAI_API_KEY"):
         return f"openai:{os.getenv('OPENAI_MODEL', 'gpt-4o-mini')}"
@@ -104,7 +138,7 @@ def _llm_provider() -> str:
 @app.get("/api/health")
 def health():
     return {"ok": True, "llm": _llm_provider(), "positions_in_memory": len(engine.store),
-            "history_db": history.path, "monitor_interval_s": MONITOR_INTERVAL_S or None}
+            "history_db": history.path, "monitor_interval_s": monitor_interval() or None}
 
 
 @app.get("/api/presets")
@@ -163,6 +197,15 @@ def replay(body: ReplayBody):
         raise HTTPException(422, str(e))
 
 
+@app.post("/api/explain")
+def explain_result(body: ExplainBody):
+    """LLM narrative for a scenario result, on request. Falls back to the template without an API key."""
+    try:
+        return explain(body.result)
+    except (KeyError, TypeError, IndexError) as e:
+        raise HTTPException(422, f"Not a scenario result: missing {e}")
+
+
 # ---------------------------------------------------------------------- monitoring
 @app.get("/api/monitor/positions")
 def monitor_positions():
@@ -197,29 +240,112 @@ def monitor_outcome(body: OutcomeBody):
 @app.post("/api/monitor/run")
 def monitor_run(body: MonitorRunBody):
     """Screen and record the whole watchlist now."""
-    with _monitor_lock:
-        return engine.run_watchlist(load_watchlist(), body.horizon_days)
+    return _run_monitor(body.horizon_days)
 
 
-MONITOR_INTERVAL_S = float(os.getenv("MONITOR_INTERVAL_S") or 0)
+@app.get("/api/monitor/watchlist")
+def monitor_watchlist():
+    """Watched positions with their latest recorded verdict and its main drivers."""
+    items, source = load_watchlist()
+    out = []
+    for it in items:
+        key = watch_key(it)
+        run = history.last_run(key) if key else None
+        out.append({**{k: it.get(k) for k in ("id", "kind", "address", "chain_id", "size_usd", "book_usd", "horizon_days", "label")},
+                    "position_key": key, "latest": _brief(run), "error": _status["errors"].get(key)})
+    return {"source": source, "items": out}
+
+
+@app.post("/api/monitor/watchlist")
+def monitor_watch(body: WatchBody):
+    item = body.model_dump()
+    key = watch_key(item)
+    return {"id": history.add_watch(item, key), "position_key": key}
+
+
+@app.delete("/api/monitor/watchlist/{watch_id}")
+def monitor_unwatch(watch_id: int):
+    if not history.remove_watch(watch_id):
+        raise HTTPException(404, "Unknown watchlist entry")
+    return {"ok": True}
+
+
+@app.get("/api/monitor/schedule")
+def monitor_schedule():
+    return _schedule()
+
+
+@app.put("/api/monitor/schedule")
+def monitor_set_schedule(body: ScheduleBody):
+    if 0 < body.interval_s < MIN_INTERVAL_S:
+        raise HTTPException(422, f"The interval must be 0 (paused) or at least {MIN_INTERVAL_S}s: every run queries live sources")
+    history.set_setting("monitor_interval_s", body.interval_s)
+    _wake.set()
+    return _schedule()
+
+
+def _brief(run: dict | None) -> dict | None:
+    """A recorded run without the per-row summary, plus its five largest expected-loss drivers."""
+    if not run:
+        return None
+    s = run.pop("summary", None) or {}
+    drivers = sorted(s.get("rows", {}).values(), key=lambda r: -(r.get("el") or 0))[:5]
+    return {**run, "model_verdict": s.get("model_verdict"), "data_issues": s.get("data_issues") or [], "drivers": drivers}
+
+
+DEFAULT_INTERVAL_S = float(os.getenv("MONITOR_INTERVAL_S") or 0)
+MIN_INTERVAL_S = 300
 _monitor_lock = threading.Lock()
+_wake = threading.Event()  # set when the schedule changes or a manual run finishes, so the loop re-plans
+_status: dict = {"running": False, "next_run": None, "errors": {}}
+
+
+def monitor_interval() -> float:
+    return float(history.setting("monitor_interval_s", DEFAULT_INTERVAL_S) or 0)
+
+
+def _schedule() -> dict:
+    _, source = load_watchlist()
+    return {"interval_s": monitor_interval(), "min_interval_s": MIN_INTERVAL_S, "running": _status["running"],
+            "last_run": history.setting("monitor_last_run"), "next_run": _status["next_run"], "watchlist_source": source}
+
+
+def _run_monitor(horizon_days: float = 30) -> list[dict]:
+    with _monitor_lock:
+        _status["running"] = True
+        try:
+            items, _ = load_watchlist()
+            res = engine.run_watchlist(items, horizon_days)
+        finally:
+            _status["running"] = False
+            history.set_setting("monitor_last_run", time.time())
+            _wake.set()
+        _status["errors"] = {watch_key(it): r["error"] for it, r in zip(items, res) if not r["ok"]}
+    log.info("monitor: screened %d positions, %d failed", len(res), sum(not r["ok"] for r in res))
+    return res
 
 
 def _monitor_loop():
+    """Runs the watchlist every ``monitor_interval()`` seconds, counted from the last run (also across restarts)."""
     while True:
-        with _monitor_lock:
-            try:
-                res = engine.run_watchlist(load_watchlist())
-                log.info("monitor: screened %d positions, %d failed", len(res), sum(not r["ok"] for r in res))
-            except Exception:  # noqa: BLE001 - the loop must survive a bad watchlist file
-                log.exception("monitor run failed")
-        time.sleep(MONITOR_INTERVAL_S)
+        interval = monitor_interval()
+        if interval > 0:
+            _status["next_run"] = (history.setting("monitor_last_run") or 0) + interval
+            wait = max(0.0, _status["next_run"] - time.time())
+        else:
+            _status["next_run"] = wait = None
+        if _wake.wait(wait):
+            _wake.clear()
+            continue
+        try:
+            _run_monitor()
+        except Exception:  # noqa: BLE001 - the loop must survive a bad watchlist file
+            log.exception("monitor run failed")
 
 
 def _start_monitor():
-    if MONITOR_INTERVAL_S > 0:
-        threading.Thread(target=_monitor_loop, name="monitor", daemon=True).start()
-        log.info("monitor: screening the watchlist every %.0fs", MONITOR_INTERVAL_S)
+    threading.Thread(target=_monitor_loop, name="monitor", daemon=True).start()
+    log.info("monitor: interval %.0fs (0 = paused)", monitor_interval())
 
 
 DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"

@@ -375,17 +375,19 @@ flowchart TD
     L5 --> L1
 ```
 
+**A held PT has layers 3 and 5 too.** Even if you only hold the PT, other people post it as collateral in lending markets priced by an oracle. If that oracle under-prices the PT, or if it tracks the market and sees a real drop, those borrowers are liquidated, and the seized PT can only be sold into its Pendle AMM. On live data, PT-reUSD has **$146.6M posted in two Morpho markets against $12.3M of AMM liquidity (11.8×)**. The engine discovers these "collateral venues" and their oracles for every PT and prices the fire sale (section 8).
+
 ### 6.5 What is in scope
 
 | Risk family | What the system checks | In scope |
 |---|---|---|
 | 1. Validation (oracle) | Which feed prices each asset, single-feed pricing, stale feeds | Yes, primary focus |
 | 2. Token dependency | What each token is backed by, layer by layer, down to the issuer | Yes |
-| 3. Liquidation | Distance to the liquidation level, and what a shock does to it | Yes |
+| 3. Liquidation | Distance to the liquidation level, what a shock does to it, and forced sales from other markets holding the same PT | Yes |
 | 4. Bridge and cross-chain | Which bridge each token came through, which chains a position touches | Yes |
 | 5. Liquidity and exit | Cost of leaving at the real position size, now and under stress | Yes |
 | 6. Mint (token supply) | Who can mint each token, supply against backing, sudden supply jumps | Yes |
-| Venue risk | Vaults that send capital to a perp exchange | Second case, if time allows |
+| Venue risk | Vaults that send capital to a perp exchange | No: vault positions were removed to keep the PT case deep |
 | Concentration risk | A protocol holding a large share of a chain's value | Stretch goal |
 
 ---
@@ -424,11 +426,15 @@ flowchart LR
     C --> D[4. Decide]
 ```
 
-**1. Discover.** Start from a Pendle PT position and walk downward. Two position types are supported: holding a PT, or supplying to a Morpho market that takes a PT as collateral (the brief's example). Ask each component "what do you rely on?" until reaching the chain. The result is a graph where the dots are things (chain, PT, underlying asset, issuer, Pendle AMM, lending market, oracle, price feed, minter, bridge) and the lines are relationships (`collateral_in`, `priced_by`, `traded_on`, `backed_by`, `issued_by`, `mintable_by`, `bridged_via`, `settles_on`). Each line stores where it came from (which contract call or API response, at which block), so the graph can be checked.
+**1. Discover.** Start from a Pendle PT position and walk downward. Two position types are supported: holding a PT, or supplying to a Morpho market that takes a PT as collateral (the brief's example). Ask each component "what do you rely on?" until reaching the chain. The result is a graph where the dots are things (chain, PT, underlying asset, issuer, Pendle AMM, lending market, oracle, price feed, minter, bridge) and the lines are relationships (`collateral_in`, `priced_by`, `traded_on`, `liquidated_in`, `backed_by`, `issued_by`, `mintable_by`, `bridged_via`, `settles_on`). Each line stores where it came from (which contract call or API response, at which block), so the graph can be checked.
+
+Every PT is also looked up in the Morpho API for the other markets that accept it as collateral (`PT --liquidated_in--> market`). The largest five holding at least $250k are added with their oracle and feeds. The position's own market is skipped, and these "collateral venues" get no line back to the PT, so the graph stays acyclic. A venue has no failure mode of its own, since a run by its lenders does not hurt a PT holder. It matters only through its oracle and the liquidations it triggers.
 
 **2. Shock.** Pick a component and a way it fails: oracle stale or manipulated, asset loses its peg, issuer defaults, token minted without backing, protocol exploited, bridge frozen or hacked, chain halts, liquidity drains. Rules attached to each kind of line say how the damage travels. For example, a depeg of the underlying passes straight through to the PT; in a lending market, an oracle that does not see that drop stops liquidations and turns it into unpaid debt for lenders. Running this thousands of times with different severities gives a range of losses, not one guess.
 
-**3. Price the exit.** Work out what it would cost to sell this position at its real size right now. Larger sales move the price more, and the cost rises as other people rush to leave.
+*Fire sales through collateral venues.* A venue's oracle shows the PT at `(1 − drop × tracks) × (1 + oracle error)` of its earlier price. Borrowers sit at 70–97% of LLTV, the same assumption as the lending-market model, so the share liquidated follows from the drop the oracle sees. Nothing is liquidated while that oracle is stale or the chain is halted. Liquidators sell 50–100% of the seized collateral into the PT's Pendle AMM (constant-product impact). Arbitrage bounds the dip: nobody sells a sound PT below the price at which it would yield 50–200% APY until it redeems, so a PT close to maturity can only dip a little, and an expired one not at all. On the live PT-reUSD market, an oracle under-pricing incident now costs a *held* PT 4.1% on average (bad case 15.5%), against zero before venues were modelled.
+
+**3. Price the exit.** Work out what it would cost to sell this position at its real size right now. A held PT takes the cheaper of a live KyberSwap quote and a live quote on its own Pendle market, since an aggregator can return a valid but poor route through thin pools. Larger sales move the price more, and the cost rises as other people rush to leave.
 
 **4. Decide.** Compare the two numbers using the rule in section 9 and output a verdict with its reasons.
 
@@ -471,11 +477,11 @@ For a market supply, only the share that can be withdrawn right now escapes the 
 
 ### 9.1 Daily monitoring
 
-Daily monitoring uses the same economic comparison as the scenario model:
+Daily monitoring uses the same economic comparison as the scenario model, net of the yield that exiting gives up:
 
-> **Exit if:** total expected loss × withdrawable share > cost of exiting now
+> **Exit if:** (total expected loss − yield given up) × withdrawable share > cost of exiting now
 
-Base-rate risk is included. The increase over current base rates is shown as context, not deducted as an assumed yield credit. No entry-time risk budget or yield compensation is inferred. Component losses are an approximate sum; warnings propagated from a stale feed to its oracle share one cause and are counted once.
+Staying earns the position's yield over the horizon: the PT's implied APY, or the market's supply APY. The exit cost already charges the yield lost during the 7 days of redeployment, so only the rest of the horizon is credited, and exited capital is assumed to earn nothing after that. Example: at 3.65% APY over a 37-day horizon, 30 days are credited, a 0.3% yield. A 0.5% expected loss nets to 0.2%, which justifies paying 0.1% to exit but not 0.25%. Base-rate risk is included. The increase over current base rates (excess risk) is shown as context only. Component losses are an approximate sum; warnings propagated from a stale feed to its oracle share one cause and are counted once.
 
 Missing or invalid feed answers, update ages, asset prices or required liquidity readings produce **REVIEW** rather than an actionable STAY/EXIT. The provisional model result remains available, missing checks are listed, and a data-quality notification is stored. Incomplete runs are excluded from calibration forecasts. A STAY with no immediate exit route is explicitly marked as execution blocked.
 
@@ -496,19 +502,19 @@ uv --directory backend run python scripts/monitor.py --every 3600  # or keep it 
 uv --directory backend run python scripts/monitor.py --calibration # how good were past forecasts?
 ```
 
-Setting `MONITOR_INTERVAL_S` in `backend/.env` runs the same loop inside the API process instead.
+The same loop also runs inside the API process. Its interval and watchlist are managed from the UI's **Scheduled monitoring** panel and stored in the `settings` and `watchlist` tables, so they survive restarts. `MONITOR_INTERVAL_S` in `backend/.env` only sets the initial interval. Without a saved watchlist, the loop screens the `WATCHLIST` file, else the presets. `scripts/monitor.py` reads the saved watchlist on every pass.
 
 ---
 
 ## 10. Architecture and data sources
 
-**Stack:** Python 3.13 risk engine (`networkx` graph, raw JSON-RPC batch reads, NumPy Monte Carlo), FastAPI backend, React + Vite + TypeScript frontend (`@xyflow/react` + dagre for the dependency graph, recharts for the loss distribution). The narrative is written by an LLM (OpenAI or Anthropic, if a key is set) from the engine's numbers only; without a key a deterministic template is used. The LLM never sets a probability or a verdict.
+**Stack:** Python 3.13 risk engine (`networkx` graph, raw JSON-RPC batch reads, NumPy Monte Carlo), FastAPI backend, React + Vite + TypeScript frontend (`@xyflow/react` + dagre for the dependency graph, recharts for the loss distribution). Every scenario comes with a deterministic template narrative. An LLM narrative (OpenAI or Anthropic, if a key is set) is written only on request, when the user presses **Generate AI summary** (`POST /api/explain`), and only from the engine's numbers. The LLM never sets a probability or a verdict.
 
-Exit quotes come from the KyberSwap aggregator, measured as raw output units valued with an independent DefiLlama USD price and decimals (public, no key). USDC and USDT are not assumed to equal $1. If KyberSwap has no route, a held PT is quoted through [Pendle's hosted SDK](https://docs.pendle.finance/pendle-v2/Developers/Backend/HostedSdk) with aggregator routing into USDC/USDT. The destination excludes the token's discovered backing assets. Proceeds already include swap fees; Pendle gas is explicitly estimated at $40. A conversion only into the underlying asset, or an AMM estimate without a confirmed complete route, does not establish an executable exit.
+Exit quotes come from the KyberSwap aggregator, measured as raw output units valued with an independent DefiLlama USD price and decimals (public, no key). USDC and USDT are not assumed to equal $1. A held PT is also quoted through [Pendle's hosted SDK](https://docs.pendle.finance/pendle-v2/Developers/Backend/HostedSdk) with aggregator routing into USDC/USDT, and the cheaper of the two routes is used. The destination excludes the token's discovered backing assets. Proceeds already include swap fees; Pendle gas is explicitly estimated at $40. A conversion only into the underlying asset, or an AMM estimate without a confirmed complete route, does not establish an executable exit.
 
 | Source | What we take from it | Access |
 |---|---|---|
-| Morpho API (GraphQL) | PT-collateral markets: loan asset, oracle address, LLTV, market state; token metadata | Public, no key |
+| Morpho API (GraphQL) | PT-collateral markets: loan asset, oracle address, LLTV, market state; every other market holding the PT as collateral (`collateralAssetAddress_in`); token metadata | Public, no key |
 | Pendle API | PT markets, underlying assets, maturity, implied APY, liquidity | Public |
 | On-chain reads (RPC) | What an oracle contract reads from, what an ERC-4626 wrapper holds, who can mint a token and its total supply, who controls a contract | RPC endpoint needed |
 | DefiLlama | Protocol size and token prices | Public for these; yield data may need a paid key |
@@ -525,7 +531,7 @@ Exit quotes come from the KyberSwap aggregator, measured as raw output units val
 ├── risk_engine/                # pure-Python engine, no web code
 │   ├── risk_engine/
 │   │   ├── sources/            # morpho.py (GraphQL), rpc.py (on-chain reads), pendle.py, pricing.py (DefiLlama, KyberSwap)
-│   │   ├── data/               # registry.json (known tokens/chains/protocols), incidents.json (15 cited incidents)
+│   │   ├── data/               # registry.json (known tokens/chains/protocols), incidents.json (16 cited incidents)
 │   │   ├── graph.py            # node and link types, evidence records
 │   │   ├── discovery.py        # traces a held PT, or a Morpho market with PT collateral, into the dependency graph
 │   │   ├── failures.py         # failure modes, hazard priors and risk-factor multipliers
@@ -540,7 +546,7 @@ Exit quotes come from the KyberSwap aggregator, measured as raw output units val
 │   │   ├── decision.py         # the rule in section 9, break-even table, confidence
 │   │   ├── explain.py          # LLM narrative (or template fallback)
 │   │   └── engine.py           # RiskEngine: analyze / screen / shock / replay, presets
-│   └── tests/                  # offline tests on synthetic PT graphs (brief examples, LLTV buffer, blind oracle, ...)
+│   └── tests/                  # offline tests on synthetic PT graphs (brief examples, LLTV buffer, blind oracle, fire sales, ...)
 ├── backend/                    # FastAPI wrapper (app/api.py), serves frontend/dist if built; scripts/monitor.py
 └── frontend/                   # React UI: position form, graph, inspector, answer panel
 ```
@@ -562,7 +568,7 @@ npm run dev        # API on http://127.0.0.1:8000 and UI on http://localhost:517
 
 Optional settings go in `backend/.env` (see `.env.example`): `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for the narrative, `RPC_URL_<chainId>` to use your own RPC endpoints instead of the public defaults, and for monitoring `HISTORY_DB`, `WATCHLIST`, `MONITOR_INTERVAL_S` and `ALERT_WEBHOOK_URL`.
 
-**Main API endpoints:** `POST /api/analyze` (trace a position and screen every node; `record: true` stores the run), `POST /api/shock` (break a component and get the verdict; `alert: "auto"` uses the live signals), `POST /api/replay` (re-run a past incident), `GET /api/presets` (reference PTs), `GET /api/catalog`. Monitoring: `POST /api/monitor/run` (screen and record the watchlist now), `GET /api/monitor/positions`, `GET /api/monitor/history?position_key=`, `GET /api/monitor/events`, `POST /api/monitor/outcomes`, `GET /api/monitor/calibration`.
+**Main API endpoints:** `POST /api/analyze` (trace a position and screen every node; `record: true` stores the run), `POST /api/shock` (break a component and get the verdict; `alert: "auto"` uses the live signals), `POST /api/replay` (re-run a past incident), `POST /api/explain` (LLM narrative for a scenario result, on request), `GET /api/presets` (reference PTs), `GET /api/catalog`. Monitoring: `POST /api/monitor/run` (screen and record the watchlist now), `GET|POST /api/monitor/watchlist` and `DELETE /api/monitor/watchlist/{id}`, `GET|PUT /api/monitor/schedule`, `GET /api/monitor/positions`, `GET /api/monitor/history?position_key=`, `GET /api/monitor/events`, `POST /api/monitor/outcomes`, `GET /api/monitor/calibration`.
 
 ---
 
@@ -573,6 +579,7 @@ Optional settings go in `backend/.env` (see `.env.example`): `OPENAI_API_KEY` or
 - **Coverage is narrow by design.** One position type traced deeply and correctly is worth more than many traced badly.
 - **Off-chain parts are only partly visible.** A custodian or a centralised exchange cannot be read from the chain.
 - **Exit cost is a snapshot.** It can worsen within minutes during an incident.
+- **The fire-sale model is first-order.** Pendle's AMM is approximated as constant-product, the arbitrage floor (50–200% APY to maturity) is a judgement call, only Morpho venues are searched (not Aave, Euler or others), and the cascade from the position's *own* market back into its PT price is not modelled, because doing so would make the graph cyclic.
 - **Signal thresholds, contagion weights and alert likelihood ratios are set by hand** until enough recorded outcomes exist to calibrate them. Change rules need at least one earlier run within 24h, and a daily schedule cannot see an intraday move that has already reverted.
 - **This is a hackathon prototype**, not a production risk system and not investment advice.
 
@@ -625,6 +632,8 @@ Optional settings go in `backend/.env` (see `.env.example`): `OPENAI_API_KEY` or
 | Term | Simple definition |
 |---|---|
 | Collateral | Something valuable left as security for a loan. |
+| Collateral venue | Another lending market that accepts the same PT as collateral. Its liquidations are sold into the PT's AMM, so its oracle is a dependency even for someone who only holds the PT. |
+| Fire sale | Forced selling, here by liquidators, that pushes a price below fair value for a while. |
 | LTV | Loan divided by collateral value. |
 | LLTV | The LTV level at which the collateral gets sold. |
 | Liquidation | The forced sale of collateral to repay a loan. |
