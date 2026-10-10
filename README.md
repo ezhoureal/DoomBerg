@@ -490,7 +490,7 @@ Exit quotes for the redemption asset come from the KyberSwap aggregator (public,
 ```
 .
 ├── README.md
-├── run.ps1                     # starts backend + frontend dev server (Windows)
+├── package.json                # cross-platform scripts: setup, dev, build, start, test
 ├── risk_engine/                # pure-Python engine, no web code
 │   ├── risk_engine/
 │   │   ├── sources/            # morpho.py (GraphQL), rpc.py (on-chain reads), pendle.py, pricing.py (DefiLlama, KyberSwap)
@@ -509,24 +509,22 @@ Exit quotes for the redemption asset come from the KyberSwap aggregator (public,
 └── frontend/                   # React UI: position form, graph, inspector, answer panel
 ```
 
-**Run it** (needs [uv](https://docs.astral.sh/uv/) and Node 18+):
-
-```powershell
-./run.ps1                       # API on http://127.0.0.1:8000, UI on http://localhost:5173
-```
-
-Or by hand:
+**Run it** (needs [uv](https://docs.astral.sh/uv/) and Node 18+). The same commands work on Windows, macOS and Linux:
 
 ```bash
-cd backend && uv sync && uv run python main.py      # API
-cd frontend && npm install && npm run dev           # UI (proxies /api to the backend)
+npm install        # installs root tools, then runs `npm run setup` (uv sync + frontend npm ci)
+npm run dev        # API on http://127.0.0.1:8000 and UI on http://localhost:5173; Ctrl+C stops both
 ```
 
-For a single server, run `npm run build` in `frontend/`; the backend then serves the UI at http://127.0.0.1:8000.
+| Script | What it does |
+|---|---|
+| `npm run setup` | Install backend (`uv sync`) and frontend (`npm ci`) dependencies |
+| `npm run dev` | Backend and Vite dev server together (UI proxies `/api` to the backend) |
+| `npm run build` | Production build of the UI into `frontend/dist` |
+| `npm start` | Build the UI, then run the backend alone; it serves the UI at http://127.0.0.1:8000 |
+| `npm test` | Risk engine tests |
 
 Optional settings go in `backend/.env` (see `.env.example`): `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for the narrative, and `RPC_URL_<chainId>` to use your own RPC endpoints instead of the public defaults.
-
-Tests: `cd risk_engine && uv run --project ../backend pytest -q tests`.
 
 **Main API endpoints:** `POST /api/analyze` (trace a position and screen every node), `POST /api/shock` (break a component and get the verdict), `POST /api/replay` (re-run a past incident), `GET /api/wallet/{address}`, `GET /api/vaults/rockawayx`, `GET /api/presets`.
 
