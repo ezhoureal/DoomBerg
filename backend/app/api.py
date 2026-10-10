@@ -111,6 +111,8 @@ def shock(body: ShockBody):
                             horizon_days=body.horizon_days, use_llm=body.use_llm)
     except KeyError as e:
         raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
 
 
 @app.post("/api/replay")

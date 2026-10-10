@@ -451,6 +451,8 @@ flowchart LR
 
 Exiting is expensive and certain. Staying is cheap and uncertain. The rule puts both on the same scale.
 
+For a market supply, only the share that can be withdrawn right now escapes the loss; the rest stays exposed whether or not you exit. The engine therefore multiplies the left side by that withdrawable share (100% for a held PT, which can always be sold).
+
 **The brief's scenario.** A $10,000,000 book split into ten pockets of $1,000,000. One pocket is affected. Selling it costs 11% in slippage, so exiting costs **$110,000** (1.1% of the whole book).
 
 | Chance of failure | Loss if it fails | Expected loss from staying | Cost to exit | Verdict |
@@ -473,7 +475,7 @@ Exiting is expensive and certain. Staying is cheap and uncertain. The rule puts 
 
 **Stack:** Python 3.13 risk engine (`networkx` graph, raw JSON-RPC batch reads, NumPy Monte Carlo), FastAPI backend, React + Vite + TypeScript frontend (`@xyflow/react` + dagre for the dependency graph, recharts for the loss distribution). The narrative is written by an LLM (OpenAI or Anthropic, if a key is set) from the engine's numbers only; without a key a deterministic template is used. The LLM never sets a probability or a verdict.
 
-Exit quotes for the redemption asset come from the KyberSwap aggregator (public, no key).
+Exit quotes come from the KyberSwap aggregator, measured as USDC/USDT actually received against our mark (public, no key). If KyberSwap has no route, a held PT is quoted on its own Pendle market through Pendle's hosted SDK (impact plus swap fee).
 
 | Source | What we take from it | Access |
 |---|---|---|

@@ -138,8 +138,10 @@ class RiskEngine:
             raise KeyError(f"Unknown node {node_id}")
         if mode not in MODES:
             raise KeyError(f"Unknown failure mode {mode}")
-        horizon = horizon_days or entry["horizon"]
         node = g.nodes[node_id]
+        if all(m.id != mode for m in applicable_modes(node.type, node.attrs)):
+            raise ValueError(f"Failure mode '{mode}' does not apply to {node.label} ({node.type})")
+        horizon = horizon_days or entry["horizon"]
         rng = np.random.default_rng(self.seed + 1)
 
         sim = Simulator(g, seed=self.seed + 2).run(node_id, mode, n=n, fixed_severity=fixed_severity)
@@ -196,9 +198,12 @@ class RiskEngine:
 
     @staticmethod
     def match_incident(g: DependencyGraph, inc: dict, screening: dict) -> str | None:
-        want = {"depeg": "asset", "unbacked_mint": "asset", "oracle_wrong_price": "oracle", "oracle_stale": "oracle",
-                "bridge_hack": "bridge", "exploit": "protocol", "chain_halt": "chain"}[inc["mode"]]
-        cands = [n for n in g.nodes.values() if n.type == want]
+        want = {"depeg": ("asset",), "unbacked_mint": ("mint_authority", "asset"), "oracle_wrong_price": ("oracle",),
+                "oracle_stale": ("oracle",), "bridge_hack": ("bridge",), "exploit": ("protocol",),
+                "chain_halt": ("chain",)}.get(inc["mode"]) or MODES[inc["mode"]].applies_to
+        # Only components the mode can actually hit (e.g. a PT cannot be minted without backing).
+        cands = [n for n in g.nodes.values() if n.type in want
+                 and any(m.id == inc["mode"] for m in applicable_modes(n.type, n.attrs))]
         if inc["mode"] == "depeg":
             sym = [n for n in cands if inc.get("symbol") and n.label.lower() == inc["symbol"]]
             same_kind = [n for n in cands if n.attrs.get("kind") == inc["kind"]]
