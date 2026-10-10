@@ -187,7 +187,7 @@ export default function Answer({
         <div className="answer-cols">
           <div className="card">
             <div className="card-h">Failure path</div>
-            <div className="path">
+            <div className="failure-path">
               {path.map((h, i) => (
                 <div key={h.node_id} className="hop">
                   {i > 0 && (

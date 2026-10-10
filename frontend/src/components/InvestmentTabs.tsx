@@ -19,10 +19,24 @@ export default function InvestmentTabs({
 }) {
   const strip = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    strip.current
-      ?.querySelector('[aria-selected="true"]')
-      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activeId]);
+    const tab = strip.current?.querySelector<HTMLElement>(
+      '[aria-selected="true"]',
+    );
+    tab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    // Switching or closing an investment hides or removes whatever had focus
+    // (the previous workspace, a close button, the add dialog's opener).
+    // Move focus to the active tab rather than letting it drop to <body>.
+    const frame = requestAnimationFrame(() => {
+      const focused = document.activeElement;
+      if (
+        !focused ||
+        focused === document.body ||
+        !focused.getClientRects().length
+      )
+        tab?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeId, items.length]);
   if (!items.length) return null;
   return (
     <div className="investment-bar">
@@ -64,9 +78,6 @@ export default function InvestmentTabs({
                     items.length) %
                   items.length;
           onSelect(items[next].id);
-          strip.current
-            ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
-            [next]?.focus();
         }}
       >
         {items.map((item) => {

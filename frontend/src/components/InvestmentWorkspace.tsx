@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { api, ApiError } from "../api";
 import type { Analysis, Catalog, ShockResult } from "../types";
-import Graph, { type ColorMode } from "./Graph";
+import Graph, { initialGraphUi, type ColorMode, type GraphUi } from "./Graph";
 import PositionForm from "./PositionForm";
 import TopRisks from "./TopRisks";
 import Inspector from "./Inspector";
@@ -23,6 +23,7 @@ import Answer from "./Answer";
 import { CHAINS, pct, usd } from "../format";
 import {
   ROLE_LABELS,
+  newWorkspaceId,
   type PositionRole,
   type ScenarioRecord,
 } from "../ui/workspace";
@@ -85,6 +86,7 @@ export default function InvestmentWorkspace({
   const [positionOpen, setPositionOpen] = useState(false);
   const requestBusy = useRef(false);
   const restoreAttempted = useRef(false);
+  const [graphUi, setGraphUi] = useState<GraphUi>(initialGraphUi);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     onBusy(!!busy);
@@ -111,6 +113,7 @@ export default function InvestmentWorkspace({
       setSelected(null);
       setPreMode(null);
       setView("dependencies");
+      setGraphUi(initialGraphUi);
       setPositionOpen(false);
     } catch (e: any) {
       setError(e.message);
@@ -141,7 +144,7 @@ export default function InvestmentWorkspace({
   const remember = (r: ShockResult) => {
     if (!analysis) return;
     const next: ScenarioRecord = {
-      id: crypto.randomUUID(),
+      id: newWorkspaceId(),
       createdAt: new Date().toISOString(),
       analysisId: analysis.position_id,
       refreshedAt,
@@ -518,6 +521,8 @@ export default function InvestmentWorkspace({
                     onSelect={choose}
                     colorMode={colorMode}
                     active={active}
+                    ui={graphUi}
+                    onUi={setGraphUi}
                   />
                   {busy === "shock" && (
                     <div className="overlay" role="status">
@@ -610,21 +615,23 @@ export default function InvestmentWorkspace({
             </button>
           </div>
         )}
-        <PositionForm
-          onAnalyze={analyze}
-          initialRole={role}
-          key={analysis?.position_id ?? "empty"}
-          busy={busy === "analyze"}
-          initial={
-            analysis
-              ? {
-                  ...analysis.request,
-                  label: analysis.request.label ?? undefined,
-                  horizon_days: analysis.screening.horizon_days,
-                }
-              : undefined
-          }
-        />
+        {positionOpen && (
+          <PositionForm
+            onAnalyze={analyze}
+            initialRole={role}
+            key={analysis?.position_id ?? "empty"}
+            busy={busy === "analyze"}
+            initial={
+              analysis
+                ? {
+                    ...analysis.request,
+                    label: analysis.request.label ?? undefined,
+                    horizon_days: analysis.screening.horizon_days,
+                  }
+                : undefined
+            }
+          />
+        )}
       </dialog>
     </div>
   );

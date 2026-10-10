@@ -22,7 +22,7 @@ To run a single test, use: `uv --directory risk_engine run --frozen --project ..
 
 Smoke scripts that hit live data: `uv --directory backend run python scripts/try_engine.py [preset_id]` and `scripts/try_discovery.py [pt_address_or_market_id] [chain_id]`.
 
-There is no linter configured. The frontend type check runs as part of `npm run build`.
+There is no linter configured. The frontend type check runs as part of `npm run build`. The frontend graph tests run with `npm --prefix frontend test`; they load TypeScript through `--experimental-strip-types`, so they need Node 22.6+ (the rest of the toolchain works on Node 18+).
 
 ## Architecture
 

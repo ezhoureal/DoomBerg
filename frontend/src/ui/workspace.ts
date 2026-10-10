@@ -18,6 +18,15 @@ export type ScenarioRecord = {
 export const HISTORY_LIMIT = 20;
 export const REFRESH_AFTER_MS = 5 * 60_000;
 
+// These identify saved UI records, not cryptographic keys. The fallback also
+// works on LAN HTTP URLs where browsers do not expose crypto.randomUUID.
+export function newWorkspaceId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `workspace-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
+}
+
 export function ageLabel(timestamp: string, now = Date.now()): string {
   const elapsed = Math.max(0, now - Date.parse(timestamp));
   if (!Number.isFinite(elapsed)) return "Unknown age";

@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useReducer,
@@ -20,7 +21,11 @@ import {
   serializeWorkspace,
   STORAGE_KEY,
 } from "./ui/storage";
-import type { PositionRole, ScenarioRecord } from "./ui/workspace";
+import {
+  newWorkspaceId,
+  type PositionRole,
+  type ScenarioRecord,
+} from "./ui/workspace";
 import {
   emptyInvestments,
   investmentsReducer,
@@ -30,7 +35,9 @@ import {
 
 // Keep workspaces mounted when switching tabs, preserving graph controls,
 // scenario inputs and results. Each workspace owns its own async requests.
-function WorkspaceTab({
+// Only the active workspace gets the tab list, so its ids stay unique and
+// memo skips re-rendering hidden workspaces when another tab changes.
+const WorkspaceTab = memo(function WorkspaceTab({
   item,
   active,
   catalog,
@@ -99,9 +106,11 @@ function WorkspaceTab({
       />
     </div>
   );
-}
+});
 
 const noop = () => {};
+// crypto.randomUUID is unavailable over plain HTTP on a LAN address.
+
 export default function App() {
   const [loaded] = useState(() => {
     try {
@@ -201,7 +210,7 @@ export default function App() {
     setError(null);
     try {
       const analysis = await api.analyze(request);
-      dispatch({ type: "open", id: crypto.randomUUID(), analysis, role });
+      dispatch({ type: "open", id: newWorkspaceId(), analysis, role });
       setPositionOpen(false);
     } catch (error) {
       setError(
@@ -253,7 +262,7 @@ export default function App() {
           active={item.id === investments.activeId}
           catalog={catalog}
           service={service}
-          tabs={tabs}
+          tabs={item.id === investments.activeId ? tabs : null}
           onAdd={onAdd}
           dispatch={dispatch}
           onOverview={onOverview}

@@ -361,6 +361,14 @@ export default function Inspector({
               {catalog.incidents.find((i) => i.id === incident)?.summary}
             </div>
           )}
+          {useC && (
+            <div className="hint small">
+              Replay uses your exit cost override of {pct(cOver, 1)}.{" "}
+              <button className="text-button" onClick={() => setUseC(false)}>
+                Remove override
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>

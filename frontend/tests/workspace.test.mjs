@@ -9,6 +9,7 @@ import {
   exitAmounts,
   topologyKey,
   HISTORY_LIMIT,
+  newWorkspaceId,
 } from "../src/ui/workspace.ts";
 import { restoreWorkspace, serializeWorkspace } from "../src/ui/storage.ts";
 import {
@@ -84,6 +85,21 @@ const opened = (id = "tab-a") =>
     role: "holding",
     refreshedAt: timestamp,
   });
+
+test("saved record IDs remain distinct when crypto.randomUUID is unavailable on LAN HTTP", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  Object.defineProperty(globalThis, "crypto", { configurable: true, value: {} });
+  try {
+    const first = newWorkspaceId();
+    const second = newWorkspaceId();
+    assert.equal(typeof first, "string");
+    assert.ok(first.length > 0);
+    assert.notEqual(first, second);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "crypto", descriptor);
+    else delete globalThis.crypto;
+  }
+});
 
 test("freshness reminders advance with time without changing risk data", () => {
   const time = Date.parse(timestamp);
