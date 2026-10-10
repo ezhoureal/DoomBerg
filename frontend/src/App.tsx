@@ -13,7 +13,11 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import type { Analysis, Catalog, ShockResult } from "./types";
-import Graph, { type ColorMode } from "./components/Graph";
+import Graph, {
+  initialGraphUi,
+  type ColorMode,
+  type GraphUi,
+} from "./components/Graph";
 import PositionForm from "./components/PositionForm";
 import TopRisks from "./components/TopRisks";
 import Inspector from "./components/Inspector";
@@ -34,6 +38,7 @@ export default function App() {
   const [view, setView] = useState<View>("dependencies");
   const [positionOpen, setPositionOpen] = useState(false);
   const [tracedAt, setTracedAt] = useState<string | null>(null);
+  const [graphUi, setGraphUi] = useState<GraphUi>(initialGraphUi);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     api
@@ -59,6 +64,7 @@ export default function App() {
       setSelected(null);
       setPreMode(null);
       setView("dependencies");
+      setGraphUi(initialGraphUi);
       setTracedAt(
         new Date().toLocaleTimeString([], {
           hour: "2-digit",
@@ -362,6 +368,8 @@ export default function App() {
                     onSelect={choose}
                     colorMode={colorMode}
                     fitKey={`${view}-${!!selected}`}
+                    ui={graphUi}
+                    onUi={setGraphUi}
                   />
                   {busy === "shock" && (
                     <div className="overlay" role="status">

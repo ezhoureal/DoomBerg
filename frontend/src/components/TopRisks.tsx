@@ -33,7 +33,7 @@ export default function TopRisks({
         </div>
       </details>
       <div className="risk-list">
-        {s.top.slice(0, expanded ? 10 : 3).map((r) => (
+        {(expanded ? s.top : s.top.slice(0, 3)).map((r) => (
           <button
             key={r.node_id + r.mode}
             className="risk-row"
@@ -65,9 +65,11 @@ export default function TopRisks({
           </button>
         ))}
       </div>
-      <button className="text-button" onClick={() => setExpanded(!expanded)}>
-        {expanded ? "Show fewer" : "Show all contributors"}
-      </button>
+      {s.top.length > 3 && (
+        <button className="text-button" onClick={() => setExpanded(!expanded)}>
+          {expanded ? "Show fewer" : "Show all contributors"}
+        </button>
+      )}
     </div>
   );
 }

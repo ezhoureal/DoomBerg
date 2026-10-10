@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  applyNodeChanges,
   Background,
   BackgroundVariant,
   Controls,
@@ -11,6 +12,7 @@ import {
   ReactFlowProvider,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeProps,
 } from "@xyflow/react";
 import { ChevronDown, Expand, Layers, RotateCcw } from "lucide-react";
@@ -121,6 +123,20 @@ function layout(view: ViewGraph) {
     }),
   );
 }
+// View settings live in App so they survive the graph unmounting while Results is open.
+export type GraphUi = {
+  all: boolean;
+  expanded: Set<GroupKey>;
+  pathOnly: boolean;
+  // "Reset view" collapses even the groups holding the selection or scenario, until either changes.
+  collapsedFor: string | null;
+};
+export const initialGraphUi: GraphUi = {
+  all: false,
+  expanded: new Set(),
+  pathOnly: false,
+  collapsedFor: null,
+};
 function Inner({
   analysis,
   result,
@@ -128,68 +144,121 @@ function Inner({
   onSelect,
   colorMode,
   fitKey,
+  ui,
+  onUi,
 }: Props) {
   const rf = useReactFlow();
-  const [all, setAll] = useState(false);
-  const [expanded, setExpanded] = useState<Set<GroupKey>>(new Set());
-  const [pathOnly, setPathOnly] = useState(false);
-  useEffect(() => {
-    setExpanded(new Set());
-    setAll(false);
-    setPathOnly(false);
-  }, [analysis.position_id]);
+  const { all, expanded, pathOnly } = ui;
+  const revealKey = `${selected}|${result?.shock.node_id}|${result?.shock.mode}`;
+  const revealOn = ui.collapsedFor !== revealKey;
   const pathNodes = useMemo(
     () =>
       new Set(result?.paths.flatMap((p) => p.hops.map((h) => h.node_id)) ?? []),
     [result],
   );
+  const reveal = revealOn
+    ? [selected, result?.shock.node_id, ...pathNodes].filter(
+        (id): id is string => !!id,
+      )
+    : [];
+  const revealIds = reveal.join(",");
+  const base = useMemo(
+    () =>
+      graphView(analysis, expanded, all, revealIds ? revealIds.split(",") : []),
+    [analysis, expanded, all, revealIds],
+  );
+  // Members of a collapsed group are drawn as that group.
+  const shown = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const n of base.nodes)
+      for (const id of (n.attrs.members as string[] | undefined) ?? [])
+        m.set(id, n.id);
+    return (id: string) => m.get(id) ?? id;
+  }, [base]);
+  const pathView = useMemo(
+    () => new Set([...pathNodes].map(shown)),
+    [pathNodes, shown],
+  );
   const pathEdges = useMemo(
     () =>
       new Set(
         result?.paths.flatMap((p) =>
-          p.hops.slice(1).map((h, i) => `${p.hops[i].node_id}>${h.node_id}`),
+          p.hops
+            .slice(1)
+            .map((h, i) => `${shown(p.hops[i].node_id)}>${shown(h.node_id)}`),
         ) ?? [],
       ),
-    [result],
+    [result, shown],
   );
-  const view = useMemo(() => {
-    const reveal = [
-      selected,
-      result?.shock.node_id,
-      ...(result ? [...pathNodes] : []),
-    ].filter((id): id is string => !!id);
-    const v = graphView(analysis, expanded, all, reveal);
-    if (pathOnly && result)
-      return {
-        ...v,
-        nodes: v.nodes.filter((n) => pathNodes.has(n.id)),
-        edges: v.edges.filter(
-          (e) => pathNodes.has(e.source) && pathNodes.has(e.target),
-        ),
-      };
-    return v;
-  }, [analysis, expanded, all, selected, result, pathNodes, pathOnly]);
-  const positions = useMemo(() => layout(view), [view]);
-  const nodes: Node<DepData>[] = view.nodes.map((n) => ({
-    id: n.id,
-    type: "dep",
-    position: positions[n.id],
-    data: {
-      n,
-      colorMode,
-      share: n.risk?.share ?? 0,
-      loss:
-        result && n.type !== "group" ? (result.node_losses[n.id] ?? 0) : null,
-      onPath: pathNodes.has(n.id),
-      isShock: result?.shock.node_id === n.id,
-      selected: selected === n.id,
-      dim:
-        !!result &&
-        n.type !== "group" &&
-        !pathNodes.has(n.id) &&
-        (result.node_losses[n.id] ?? 0) < 0.0001,
-    },
-  }));
+  const view = useMemo(
+    () =>
+      pathOnly && result
+        ? {
+            ...base,
+            nodes: base.nodes.filter((n) => pathView.has(n.id)),
+            edges: base.edges.filter(
+              (e) => pathView.has(e.source) && pathView.has(e.target),
+            ),
+          }
+        : base,
+    [base, pathOnly, result, pathView],
+  );
+  // Re-layout and re-fit only when the drawn graph changes, not on every selection.
+  const structure = `${view.nodes.map((n) => n.id).join(",")}|${view.edges.map((e) => e.id).join(",")}`;
+  const positions = useMemo(() => layout(view), [structure]);
+  const lossOf = (n: GNode) => {
+    if (!result) return null;
+    const ids: string[] = n.type === "group" ? n.attrs.members : [n.id];
+    return Math.max(0, ...ids.map((id) => result.node_losses[id] ?? 0));
+  };
+  const built: Node<DepData>[] = useMemo(
+    () =>
+      view.nodes.map((n) => {
+        const loss = lossOf(n);
+        return {
+          id: n.id,
+          type: "dep",
+          position: positions[n.id],
+          data: {
+            n,
+            colorMode,
+            share: n.risk?.share ?? 0,
+            loss: n.type === "group" ? null : loss,
+            onPath: pathView.has(n.id),
+            isShock: !!result && shown(result.shock.node_id) === n.id,
+            selected: !!selected && shown(selected) === n.id,
+            dim: !!result && !pathView.has(n.id) && (loss ?? 0) < 0.0001,
+          },
+        };
+      }),
+    [view, positions, colorMode, result, pathView, shown, selected],
+  );
+  // React Flow keeps measured sizes and drag positions on the node objects it is given,
+  // so carry them over when the data changes instead of handing it fresh nodes.
+  const [nodes, setNodes] = useState<Node<DepData>[]>(built);
+  const laidOut = useRef(positions);
+  useEffect(() => {
+    const relaid = laidOut.current !== positions;
+    laidOut.current = positions;
+    setNodes((prev) => {
+      const old = new Map(prev.map((n) => [n.id, n]));
+      return built.map((n) => {
+        const o = old.get(n.id);
+        return o
+          ? {
+              ...n,
+              measured: o.measured,
+              position: relaid ? n.position : o.position,
+            }
+          : n;
+      });
+    });
+  }, [built, positions]);
+  const onNodesChange = useCallback(
+    (changes: NodeChange<Node<DepData>>[]) =>
+      setNodes((ns) => applyNodeChanges(changes, ns)),
+    [],
+  );
   const edges: Edge[] = view.edges.map((e) => {
     const hot = pathEdges.has(`${e.source}>${e.target}`);
     return {
@@ -219,7 +288,8 @@ function Inner({
       80,
     );
     return () => clearTimeout(t);
-  }, [view, rf, fitKey]);
+  }, [structure, rf, fitKey]);
+  const set = (u: Partial<GraphUi>) => onUi({ ...ui, ...u });
   return (
     <>
       <div className="graph-tools">
@@ -227,17 +297,14 @@ function Inner({
           <button
             className={!all ? "on" : ""}
             aria-pressed={!all}
-            onClick={() => setAll(false)}
+            onClick={() => set({ all: false })}
           >
             Simplified
           </button>
           <button
             className={all ? "on" : ""}
             aria-pressed={all}
-            onClick={() => {
-              setAll(true);
-              setPathOnly(false);
-            }}
+            onClick={() => set({ all: true, pathOnly: false })}
           >
             All components
           </button>
@@ -246,18 +313,20 @@ function Inner({
           <button
             className={`tool-button ${pathOnly ? "on" : ""}`}
             aria-pressed={pathOnly}
-            onClick={() => setPathOnly(!pathOnly)}
+            onClick={() => set({ pathOnly: !pathOnly })}
           >
             Failure path
           </button>
         )}
         <button
           className="tool-button"
-          onClick={() => {
-            setExpanded(new Set());
-            setAll(false);
-            setPathOnly(false);
-          }}
+          onClick={() =>
+            onUi({
+              ...initialGraphUi,
+              expanded: new Set(),
+              collapsedFor: revealKey,
+            })
+          }
           title="Collapse groups"
         >
           <RotateCcw size={13} />
@@ -275,10 +344,11 @@ function Inner({
         <ReactFlow
           nodes={nodes}
           edges={edges}
+          onNodesChange={onNodesChange}
           nodeTypes={nodeTypes}
           onNodeClick={(_, n) => {
             const group = view.groups[n.id];
-            if (group) setExpanded((old) => new Set([...old, group]));
+            if (group) set({ expanded: new Set([...expanded, group]) });
             else onSelect(n.id);
           }}
           onPaneClick={() => onSelect(null)}
@@ -314,14 +384,12 @@ function Inner({
                   {meta.label}
                 </span>
               ))}
-            {Object.entries(GROUPS).map(([key, g]) => (
+            {Object.values(view.groups).map((key) => (
               <button
                 key={key}
-                onClick={() =>
-                  setExpanded((old) => new Set([...old, key as GroupKey]))
-                }
+                onClick={() => set({ expanded: new Set([...expanded, key]) })}
               >
-                Expand {g.label.toLowerCase()}
+                Expand {GROUPS[key].label.toLowerCase()}
               </button>
             ))}
           </div>
@@ -337,6 +405,8 @@ type Props = {
   onSelect: (id: string | null) => void;
   colorMode: ColorMode;
   fitKey: string;
+  ui: GraphUi;
+  onUi: (ui: GraphUi) => void;
 };
 export default function Graph(props: Props) {
   return (
