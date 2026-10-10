@@ -11,22 +11,24 @@ import {
   applyNodeChanges,
   Background,
   BackgroundVariant,
+  BaseEdge,
   Controls,
   Handle,
   MarkerType,
   Position,
   ReactFlow,
   useReactFlow,
+  useNodesInitialized,
   useStore,
+  useUpdateNodeInternals,
   ReactFlowProvider,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeChange,
   type NodeProps,
-  type Viewport,
 } from "@xyflow/react";
 import { ChevronDown, Expand, Layers, RotateCcw } from "lucide-react";
-import dagre from "@dagrejs/dagre";
 import "@xyflow/react/dist/style.css";
 import type { Analysis, GNode, ShockResult } from "../types";
 import { TYPE_META, lossColor, pct, riskColor } from "../format";
@@ -36,12 +38,11 @@ import {
   graphView,
   GROUPS,
   type GroupKey,
-  type ViewGraph,
 } from "../ui/graphView";
+import { layoutGraph, NODE_WIDTH as W, NODE_HEIGHT as H, portId, routeLabel, routePath, type Port, type Point, type RoutedLayout } from "../ui/graphLayout";
 export type ColorMode = "risk" | "type";
-const W = 260,
-  H = 104;
 type DepData = {
+  ports: Port[];
   n: GNode;
   colorMode: ColorMode;
   share: number;
@@ -51,7 +52,9 @@ type DepData = {
   selected: boolean;
   dim: boolean;
 };
-const DepNode = memo(({ data }: NodeProps<Node<DepData>>) => {
+const DepNode = memo(({ id, data }: NodeProps<Node<DepData>>) => {
+  const updateInternals = useUpdateNodeInternals();
+  useEffect(() => { updateInternals(id); }, [id, data.ports, updateInternals]);
   const { n, share, loss, onPath, isShock, selected, dim, colorMode } = data;
   const meta = TYPE_META[n.type] ?? {
     label: "Group",
@@ -71,7 +74,11 @@ const DepNode = memo(({ data }: NodeProps<Node<DepData>>) => {
       className={`dep-node ${n.type === "group" ? "group-node" : ""} ${selected ? "graph-selected" : ""} ${onPath ? "on-failure-path" : ""} ${isShock ? "shock" : ""}`}
       style={{ ["--accent" as any]: accent, opacity: dim ? 0.42 : 1 }}
     >
-      <Handle type="target" position={Position.Left} className="h" />
+      {data.ports.map((p) => (
+        <Handle key={p.id} id={p.id} type={p.side}
+          position={p.side === "source" ? Position.Right : Position.Left}
+          style={{ top: p.y }} className="h" isConnectable={false} />
+      ))}
       <div className="dep-glyph" style={{ color: accent }}>
         {n.type === "group" ? <Layers size={17} /> : meta.glyph}
       </div>
@@ -111,31 +118,26 @@ const DepNode = memo(({ data }: NodeProps<Node<DepData>>) => {
           ""
         )}
       </div>
-      <Handle type="source" position={Position.Right} className="h" />
     </div>
   );
 });
 const nodeTypes = { dep: DepNode };
-function layout(view: ViewGraph) {
-  const g = new dagre.graphlib.Graph();
-  g.setGraph({
-    rankdir: "LR",
-    ranksep: 60,
-    nodesep: 28,
-    marginx: 20,
-    marginy: 20,
-  });
-  g.setDefaultEdgeLabel(() => ({}));
-  view.nodes.forEach((n) => g.setNode(n.id, { width: W, height: H }));
-  view.edges.forEach((e) => g.setEdge(e.source, e.target));
-  dagre.layout(g);
-  return Object.fromEntries(
-    view.nodes.map((n) => {
-      const point = g.node(n.id);
-      return [n.id, { x: point.x - W / 2, y: point.y - H / 2 }];
-    }),
-  );
-}
+const RoutedEdge = memo((props: EdgeProps<Edge<{ points: Point[] }>>) => {
+  const points = props.data?.points;
+  if (!points?.length) return null;
+  const path = routePath(points), label = routeLabel(points);
+  return <>
+    {/* The casing breaks the lower line at a crossing: crossing is not a junction. */}
+    <path d={path} fill="none" stroke="#fdfcfb" strokeWidth={8}
+      strokeLinejoin="round" style={{ pointerEvents: "none" }} />
+    <BaseEdge id={props.id} path={path} markerEnd={props.markerEnd}
+      style={{ ...props.style, strokeLinejoin: "round" }} label={props.label}
+      labelX={label.x} labelY={label.y} labelStyle={props.labelStyle}
+      labelBgStyle={props.labelBgStyle} labelBgPadding={props.labelBgPadding} />
+  </>;
+});
+const edgeTypes = { routed: RoutedEdge };
+const emptyPositions: Record<string, Point> = {};
 // View settings live in the workspace so they survive the graph unmounting while Results is open.
 export type GraphUi = {
   all: boolean;
@@ -163,16 +165,13 @@ function Inner({
   onUi,
 }: Props) {
   const rf = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
   // Every open investment keeps its graph mounted, so each React Flow needs
   // its own id or their SVG marker and background pattern ids collide.
   const flowId = `graph-${useId().replace(/[^\w-]/g, "")}`;
   const width = useStore((s) => s.width);
   const height = useStore((s) => s.height);
   const fitted = useRef<string | null>(null);
-  // The graph stays fitted while its canvas resizes (the inspector opening,
-  // a tab becoming visible) until the user pans or zooms it themselves.
-  const autoFit = useRef(true);
-  const moveStart = useRef<Viewport | null>(null);
   const [fitRequest, setFitRequest] = useState(0);
   const { all, expanded, pathOnly, labels } = ui;
   const revealKey = `${selected}|${result?.shock.node_id}|${result?.shock.mode}`;
@@ -231,7 +230,20 @@ function Inner({
   );
   // Re-layout only when the drawn graph changes, not on every selection.
   const structure = topologyKey(view);
-  const positions = useMemo(() => layout(view), [structure]);
+  const [layoutState, setLayoutState] = useState<{ key: string; graph: RoutedLayout } | null>(null);
+  const [layoutError, setLayoutError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setLayoutError(null);
+    layoutGraph(view).then((graph) => {
+      if (!cancelled) setLayoutState({ key: structure, graph });
+    }).catch(() => {
+      if (!cancelled) setLayoutError("Could not arrange connections. Refresh this investment to retry.");
+    });
+    return () => { cancelled = true; };
+  }, [structure]);
+  const ready = layoutState?.key === structure;
+  const positions = layoutState?.graph.positions ?? emptyPositions;
   // Highlight connections only when the selection is drawn; "Failure path"
   // can hide it, and dimming everything around nothing helps no one.
   const selectedId = selected ? shown(selected) : null;
@@ -256,16 +268,19 @@ function Inner({
   };
   const built: Node<DepData>[] = useMemo(
     () =>
-      view.nodes.map((n) => {
+      (ready ? view.nodes : []).map((n) => {
         const loss = lossOf(n);
         return {
           id: n.id,
           type: "dep",
+          draggable: false,
+          className: "nopan",
           position: positions[n.id],
           // Use the same box dimensions for React Flow and Dagre. Selection only
           // changes the highlight, so it cannot enlarge a card into its neighbour.
           style: { width: W, height: H },
           data: {
+            ports: layoutState?.graph.ports[n.id] ?? [],
             n,
             colorMode,
             share: n.risk?.share ?? 0,
@@ -283,6 +298,8 @@ function Inner({
       }),
     [
       view,
+      ready,
+      layoutState,
       positions,
       colorMode,
       result,
@@ -293,13 +310,9 @@ function Inner({
       neighbours,
     ],
   );
-  // React Flow keeps measured sizes and drag positions on the node objects it is given,
-  // so carry them over when the data changes instead of handing it fresh nodes.
+  // Preserve React Flow's measurements; positions always come from the fixed layout.
   const [nodes, setNodes] = useState<Node<DepData>[]>(built);
-  const laidOut = useRef(positions);
   useEffect(() => {
-    const relaid = laidOut.current !== positions;
-    laidOut.current = positions;
     setNodes((prev) => {
       const old = new Map(prev.map((n) => [n.id, n]));
       return built.map((n) => {
@@ -308,7 +321,7 @@ function Inner({
           ? {
               ...n,
               measured: o.measured,
-              position: relaid ? n.position : o.position,
+              position: n.position,
             }
           : n;
       });
@@ -316,10 +329,10 @@ function Inner({
   }, [built, positions]);
   const onNodesChange = useCallback(
     (changes: NodeChange<Node<DepData>>[]) =>
-      setNodes((ns) => applyNodeChanges(changes, ns)),
+      setNodes((ns) => applyNodeChanges(changes.filter((c) => c.type !== "position" && c.type !== "remove"), ns)),
     [],
   );
-  const edges: Edge[] = view.edges.map((e) => {
+  const edges: Edge[] = (ready ? view.edges : []).map((e) => {
     const hot = pathEdges.has(`${e.source}>${e.target}`);
     const connected =
       e.source === selectedVisible || e.target === selectedVisible;
@@ -328,7 +341,11 @@ function Inner({
       id: e.id,
       source: e.source,
       target: e.target,
-      type: "smoothstep",
+      sourceHandle: portId(e.id, "source"),
+      targetHandle: portId(e.id, "target"),
+      type: "routed",
+      data: { points: layoutState!.graph.routes[e.id] },
+      reconnectable: false,
       animated: hot,
       label: hot || connected || labels ? relationLabel(e.type) : undefined,
       labelStyle: {
@@ -345,27 +362,25 @@ function Inner({
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        width: 20,
-        height: 20,
+        width: 14,
+        height: 14,
         markerUnits: "userSpaceOnUse",
         color,
       },
     };
   });
   const fit = () => {
-    autoFit.current = true;
     rf.fitView({ padding: 0.15, duration: 250 });
   };
   useEffect(() => {
-    // Fit a newly loaded investment, an explicit reset, or a resized canvas
-    // the user hasn't moved. Selecting nodes and expanding groups keep the
-    // current zoom. fitView waits until React Flow has measured the nodes.
-    if (!active || !width || !height) return;
+    // Only a new investment or explicit reset fits automatically. Opening an
+    // inspector, expanding groups and switching existing tabs preserve zoom.
+    if (!active || !width || !height || !ready || !nodesInitialized || nodes.length !== view.nodes.length) return;
     const key = `${analysis.position_id}:${fitRequest}`;
-    if (fitted.current === key && !autoFit.current) return;
+    if (fitted.current === key) return;
     fitted.current = key;
     fit();
-  }, [analysis.position_id, fitRequest, active, width, height]);
+  }, [analysis.position_id, fitRequest, active, width, height, ready, nodes.length, nodesInitialized]);
   const set = (u: Partial<GraphUi>) => onUi({ ...ui, ...u });
   return (
     <>
@@ -422,34 +437,26 @@ function Inner({
         </button>
       </div>
       <div className="graph-canvas">
+        {!ready && <div className="graph-layout-status" role="status">{layoutError ?? "Arranging connections…"}</div>}
         <ReactFlow
           id={flowId}
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onNodeClick={(_, n) => {
             const group = view.groups[n.id];
             if (group) set({ expanded: new Set([...expanded, group]) });
             else onSelect(n.id);
           }}
           onPaneClick={() => onSelect(null)}
-          onMoveStart={(_, viewport) => (moveStart.current = viewport)}
-          onMoveEnd={(event, viewport) => {
-            // Programmatic moves (fitView) have no source event, and a plain
-            // click on the pane starts a move without changing the viewport.
-            const start = moveStart.current;
-            if (
-              event &&
-              (start?.x !== viewport.x ||
-                start?.y !== viewport.y ||
-                start?.zoom !== viewport.zoom)
-            )
-              autoFit.current = false;
-          }}
           minZoom={0.15}
           maxZoom={1.8}
-          nodesDraggable
+          nodesDraggable={false}
+          nodesConnectable={false}
+          edgesReconnectable={false}
+          deleteKeyCode={null}
           proOptions={{ hideAttribution: true }}
         >
           <Background
@@ -461,9 +468,6 @@ function Inner({
           <Controls
             showInteractive={false}
             position="bottom-right"
-            onZoomIn={() => (autoFit.current = false)}
-            onZoomOut={() => (autoFit.current = false)}
-            onFitView={() => (autoFit.current = true)}
           />
         </ReactFlow>
       </div>
@@ -471,6 +475,7 @@ function Inner({
         <span>
           {view.nodes.length} visible / {analysis.stats.nodes} total · Arrows
           mean “depends on” · Select a component to highlight connections
+          · Crossings are not connections
         </span>
         <details>
           <summary>Categories</summary>
