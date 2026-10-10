@@ -459,19 +459,21 @@ export default function InvestmentWorkspace({
             </button>
           </div>
         )}
-        <PositionForm
-          onAnalyze={analyze}
-          busy={busy === "analyze"}
-          initial={
-            analysis
-              ? {
-                  ...analysis.request,
-                  label: analysis.request.label ?? undefined,
-                  horizon_days: analysis.screening.horizon_days,
-                }
-              : undefined
-          }
-        />
+        {positionOpen && (
+          <PositionForm
+            onAnalyze={analyze}
+            busy={busy === "analyze"}
+            initial={
+              analysis
+                ? {
+                    ...analysis.request,
+                    label: analysis.request.label ?? undefined,
+                    horizon_days: analysis.screening.horizon_days,
+                  }
+                : undefined
+            }
+          />
+        )}
       </dialog>
     </div>
   );
