@@ -20,7 +20,7 @@ SYSTEM = (
     "A portfolio manager must decide STAY or EXIT on a position after a dependency failure. "
     "Use ONLY the numbers and facts in the JSON you receive; never invent figures, protocols or events. "
     "Write at most 200 words in Markdown with exactly these sections:\n"
-    "**Verdict** - one sentence with the verdict and the two numbers that drive it (expected loss vs exit cost).\n"
+    "**Verdict** - one sentence with the verdict and the two numbers that drive it (avoidable expected loss vs exit cost).\n"
     "**What is causing the risk** - walk the main dependency path hop by hop (position -> ... -> failing component) "
     "and say what each hop does to the money. Name the weakest link and why (use the risk factors / evidence).\n"
     "**Why these numbers** - probability (and its range), loss if it fails (typical vs bad case), exit cost and what limits the exit.\n"
@@ -47,6 +47,7 @@ def build_context(result: dict) -> dict:
         "probability_reasons": result["probability"]["reasons"],
         "loss_if_fails": d["loss_given_failure"],
         "expected_loss_usd": d["expected_loss_usd"],
+        "avoidable_loss_usd": d["avoidable_loss_usd"],
         "exit_cost_pct": d["exit_cost_pct"],
         "exit_cost_usd": d["exit_cost_usd"],
         "exit_steps": [s["detail"] for s in result["exit"]["steps"]],
@@ -100,8 +101,9 @@ def template(ctx: dict) -> str:
     weakest = max(path[1:], key=lambda h: h["mean_loss"], default=None) if path else None
     lines = [
         "#### Verdict",
-        f"{v}: expected loss if you stay is {_usd(ctx['expected_loss_usd'])} ({_pct(p)} chance x {_pct(lf['mean'])} loss) "
-        f"versus {_usd(ctx['exit_cost_usd'])} ({_pct(ctx['exit_cost_pct'])}) to exit now.",
+        f"{v}: exiting can avoid {_usd(ctx['avoidable_loss_usd'])} of the {_usd(ctx['expected_loss_usd'])} expected loss "
+        f"({_pct(p)} chance x {_pct(lf['mean'])} loss x {_pct(ctx['instant_exit_fraction'])} available to exit), "
+        f"versus {_usd(ctx['exit_cost_usd'])} ({_pct(ctx['exit_cost_pct'])}) exit cost.",
         "",
         "#### What is causing the risk",
         f"Path: {hops}.",
@@ -123,7 +125,9 @@ def template(ctx: dict) -> str:
         "#### What would change the call",
     ]
     be = ctx["break_even_probability"]
-    if be is None or be >= 1:
+    if ctx['instant_exit_fraction'] <= 0:
+        lines.append("No immediate complete exit route is available; check executable routing and liquidity before attempting an exit.")
+    elif be is None or be >= 1:
         lines.append("Even a certain failure costs less than exiting; only a larger loss estimate would flip this.")
     else:
         lines.append(f"Exit becomes right above a {_pct(be)} failure probability. "

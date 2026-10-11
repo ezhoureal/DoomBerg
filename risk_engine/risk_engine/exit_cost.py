@@ -2,8 +2,9 @@
 
 Exit plan:
   - Held PT: sell it, priced with a live KyberSwap quote at size (else a live quote on its Pendle market,
-    else a constant-product estimate), widened by a stress multiplier because liquidity providers pull
-    out during incidents. Forgone fixed PT yield while the capital is redeployed.
+    with aggregator routing into a distinct USDC/USDT destination), widened by a stress multiplier because liquidity providers pull
+    out during incidents. An unconfirmed route receives zero immediate loss-avoidance credit.
+    Forgone fixed PT yield while the capital is redeployed.
   - Market supply: withdraw, limited by instant liquidity; during an incident other lenders race for
     the same liquidity (run share r ~ Beta). If the loan asset itself is damaged, what was withdrawn must
     also be sold. Forgone supply yield on the withdrawn part while it is redeployed.
@@ -15,7 +16,7 @@ import numpy as np
 
 from .graph import DependencyGraph
 from .sources import pendle
-from .sources.pricing import swap_quote
+from .sources.pricing import swap_quote, exit_token, output_value_usd, USDC
 
 GAS_USD = 40.0
 
@@ -30,11 +31,23 @@ def _amm_impact(size: float, depth: float) -> float:
 
 def quote_asset_sale(g: DependencyGraph, asset_id: str, size: float) -> dict:
     a = g.nodes[asset_id]
+    # Exiting a PT backed by USDC into USDC does not escape its backing risk.
+    # Include transitive backing (e.g. vault -> USDC), not just the PT itself.
+    seen, pending, backing_addresses = set(), [asset_id], set()
+    while pending:
+        nid = pending.pop()
+        if nid in seen:
+            continue
+        seen.add(nid)
+        if g.nodes[nid].address:
+            backing_addresses.add(g.nodes[nid].address.lower())
+        pending.extend(e.target for e in g.out_edges(nid) if e.type == "backed_by")
+    token_out = exit_token(a.address or "", a.chain_id or 1, backing_addresses)
     price = a.attrs.get("price_usd")
-    if a.address and price:
-        q = swap_quote(a.address, int(a.attrs.get("decimals") or 18), size, price, a.chain_id or 1)
+    if a.address and price and token_out:
+        q = swap_quote(a.address, int(a.attrs.get("decimals") or 18), size, price, a.chain_id or 1, token_out=token_out)
         if q:
-            out = "USDT" if a.label.upper() == "USDC" else "USDC"
+            out = "USDC" if token_out.lower() == USDC.get(a.chain_id or 1, "").lower() else "USDT"
             return {"impact": q["price_impact"], "source": "kyberswap",
                     "detail": f"Live KyberSwap route: sell ${size:,.0f} of {a.label} -> ${q['amount_out_usd']:,.0f} {out} "
                               f"({q['price_impact']:.2%} impact, gas ${q['gas_usd']:.2f})"}
@@ -42,21 +55,23 @@ def quote_asset_sale(g: DependencyGraph, asset_id: str, size: float) -> dict:
         if e.type != "traded_on":
             continue
         amm = g.nodes[e.target]
-        under, decimals = amm.attrs.get("underlying"), a.attrs.get("decimals")
-        if a.address and amm.address and under and price and decimals:
-            q = pendle.swap_quote(amm.address, a.address, under, int(size / price * 10 ** int(decimals)), a.chain_id or 1)
+        decimals = a.attrs.get("decimals")
+        if a.address and amm.address and token_out and price and decimals is not None:
+            q = pendle.swap_quote(amm.address, a.address, token_out, int(size / price * 10 ** int(decimals)), a.chain_id or 1)
             if q:
-                imp = q["price_impact"] + q["fee_usd"] / size
-                return {"impact": imp, "source": "pendle-api",
-                        "detail": f"Live Pendle quote on {amm.label}: sell ${size:,.0f} of {a.label} -> "
-                                  f"{q['price_impact']:.2%} impact + ${q['fee_usd']:,.0f} swap fee ({imp:.2%})"}
+                proceeds = output_value_usd(token_out, q["amount_out"], a.chain_id or 1)
+                if proceeds is not None:
+                    imp = max(0.0, 1.0 - (proceeds - GAS_USD) / size)
+                    return {"impact": imp, "source": "pendle-api",
+                            "detail": f"Live Pendle route on {amm.label}: sell ${size:,.0f} of {a.label} into USDC/USDT "
+                                      f"worth ${proceeds:,.0f}; fees included in proceeds, gas assumed ${GAS_USD:,.0f} ({imp:.2%} cost)"}
         liq = amm.attrs.get("liquidity_usd")
         if liq is not None:
             imp = _amm_impact(size, liq)
-            return {"impact": imp, "source": "pendle-api",
+            return {"impact": imp, "source": "assumption", "available": False,
                     "detail": f"Constant-product estimate on {amm.label} (liquidity ${liq:,.0f}): {imp:.2%}. "
-                              f"Rough upper bound: Pendle concentrates liquidity around the implied rate"}
-    return {"impact": 0.05, "source": "assumption",
+                              "No complete route into USDC/USDT was confirmed; this estimate is not an executable exit"}
+    return {"impact": 0.05, "source": "assumption", "available": False,
             "detail": f"No route found for {a.label}; assumed 5% exit cost (unknown liquidity)"}
 
 
@@ -91,10 +106,13 @@ def exit_cost(g: DependencyGraph, size: float, rng: np.random.Generator, stresse
     sell_size = size * float(instant_frac.mean())
     if sell_asset_id and sell_size > 0:
         q = quote_asset_sale(g, sell_asset_id, sell_size)
+        if target.type != "market" and not q.get("available", True):
+            instant_frac = np.zeros(n)
+            assumptions.append("No complete held-PT exit route into independently priced USDC/USDT could be confirmed; no loss avoidance is credited")
         mult = rng.lognormal(np.log(2.0), 0.5, n) if stressed else np.ones(n)
         impact = np.clip(q["impact"] * mult, 0, 0.95) * instant_frac
         cost += impact
-        steps.append({"step": f"Sell {g.nodes[sell_asset_id].label}", "source": q["source"], "detail": q["detail"],
+        steps.append({"step": f"{'Sell' if q.get('available', True) else 'Unconfirmed exit for'} {g.nodes[sell_asset_id].label}", "source": q["source"], "detail": q["detail"],
                       "cost_pct": float(impact.mean())})
         if stressed:
             assumptions.append("DEX price impact widens x2 on average (lognormal) as liquidity providers withdraw during incidents")
@@ -112,7 +130,7 @@ def exit_cost(g: DependencyGraph, size: float, rng: np.random.Generator, stresse
         "cost_pct_ci": [float(np.quantile(cost, 0.05)), float(np.quantile(cost, 0.95))],
         "cost_usd": float(cost.mean() * size),
         "instant_fraction": float(instant_frac.mean()),
-        "instant_fraction_calm": float(min(1.0, (target.attrs.get("liquidity_usd") or 0) / size)) if target.type == "market" else 1.0,
+        "instant_fraction_calm": float(min(1.0, (target.attrs.get("liquidity_usd") or 0) / size)) if target.type == "market" else float(instant_frac.mean()),
         "stressed": stressed,
         "steps": steps,
         "assumptions": assumptions,

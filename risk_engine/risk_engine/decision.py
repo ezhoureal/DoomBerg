@@ -31,7 +31,9 @@ def decide(size: float, book: float, p_samples: np.ndarray, loss_samples: np.nda
         confidence = float(((stay_loss > costs[:n]) == exit_).mean())
 
     reasons = []
-    if break_even is None or break_even >= 1:
+    if f == 0:
+        reasons.append("No immediate complete exit is available; this route cannot avoid the position's loss")
+    elif break_even is None or break_even >= 1:
         reasons.append("Exiting costs more than the loss even if the failure is certain")
     else:
         reasons.append(f"Exit pays off if the failure is more likely than {break_even:.1%}; the model estimates {p:.1%}")

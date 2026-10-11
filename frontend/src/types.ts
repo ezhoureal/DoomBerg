@@ -80,7 +80,7 @@ export type ShockResult = {
     verdict: "STAY" | "EXIT"; confidence: number; probability: number; probability_source: string;
     loss_given_failure: { mean: number; typical: number; bad_case: number };
     expected_loss_pct: number; expected_loss_usd: number; bad_case_usd: number; exit_cost_pct: number; exit_cost_usd: number; instant_fraction: number; instant_fraction_calm: number;
-    break_even_probability: number | null; avoidable_loss_usd: number; book_impact_pct: number | null; position_share_of_book: number | null;
+    break_even_probability: number | null; avoidable_loss_pct?: number; avoidable_loss_usd: number; book_impact_pct: number | null; position_share_of_book: number | null;
     reasons: string[]; break_even_table: { loss_if_fails: number; exit_above: number | null }[];
   };
   paths: { hops: Hop[]; strength: number }[];

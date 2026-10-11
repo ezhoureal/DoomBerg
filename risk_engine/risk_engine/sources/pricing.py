@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from .http import get_json
 
 LLAMA_CHAINS = {1: "ethereum", 8453: "base", 42161: "arbitrum", 10: "optimism", 137: "polygon", 143: "monad"}
@@ -42,11 +43,32 @@ def protocol_tvl(slug: str) -> float | None:
         return None
 
 
+def exit_token(token_in: str, chain_id: int, excluded: set[str] | None = None) -> str | None:
+    excluded = {address.lower() for address in (excluded or set())} | {token_in.lower()}
+    return next((token for token in (USDC.get(chain_id), USDT.get(chain_id))
+                 if token and token.lower() not in excluded), None)
+
+
+def output_value_usd(token_out: str, amount_raw: int, chain_id: int) -> float | None:
+    """Value proceeds independently of the route's own input/output marks. Never assume a $1 peg."""
+    mark = price_usd(token_out, chain_id)
+    if not mark:
+        return None
+    try:
+        price, decimals = float(mark["price"]), int(mark["decimals"])
+        if price <= 0 or not 0 <= decimals <= 36 or not math.isfinite(price):
+            return None
+        value = amount_raw / 10 ** decimals * price
+        return value if math.isfinite(value) and value > 0 else None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
 def swap_quote(token_in: str, decimals: int, amount_usd: float, price: float, chain_id: int,
                token_out: str | None = None) -> dict | None:
     """Quote selling ``amount_usd`` worth of ``token_in`` for USDC. Returns price impact as a fraction."""
     chain = KYBER_CHAINS.get(chain_id)
-    token_out = token_out or USDC.get(chain_id)
+    token_out = token_out or exit_token(token_in, chain_id)
     if token_out and token_in.lower() == token_out.lower():
         token_out = USDT.get(chain_id)
     if not chain or not token_out or not price or price <= 0:
@@ -65,15 +87,15 @@ def swap_quote(token_in: str, decimals: int, amount_usd: float, price: float, ch
         return None
     usd_in = float(rs.get("amountInUsd") or 0)
     gas = float(rs.get("gasUsd") or 0)
-    # Dollars actually received (USDC / USDT, 6 decimals on every chain above) against our mark. Kyber's own
-    # amountInUsd / amountOutUsd are not used: for thin tokens it values the input off the same route it trades
-    # through (hiding the slippage), and its stablecoin oracle is off by a few bp on both sides.
-    usd_out = int(rs.get("amountOut") or 0) / 1e6
-    if usd_out <= 0:
+    # Raw output units are valued using an independent price and decimals;
+    # route marks can hide slippage, and the output stablecoin may itself depeg.
+    usd_out = output_value_usd(token_out, int(rs.get("amountOut") or 0), chain_id)
+    if usd_out is None:
         return None
     return {
         "amount_in_usd": usd_in,
         "amount_out_usd": usd_out,
+        "token_out": token_out,
         "gas_usd": gas,
         "price_impact": max(0.0, 1 - (usd_out - gas) / amount_usd),
         "route_hops": len(rs.get("route") or []),
