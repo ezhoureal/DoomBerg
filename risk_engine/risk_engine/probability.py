@@ -2,9 +2,11 @@
 
 1. Prior: failures of a component class arrive as a Poisson process with annual rate lambda.
    lambda ~ Gamma(k + 0.5, T) (Jeffreys posterior from k historical events over T component-years),
-   scaled by multiplicative risk factors read from the graph (proportional-hazards style).
+   scaled by multiplicative risk factors read from the graph (proportional-hazards style), and by a
+   time-varying contagion multiplier from recent related events (``contagion.py``).
 2. Horizon: P(failure within H days) = 1 - exp(-lambda * H / 365), sampled to give a credible band.
 3. Alert update: when monitoring fires, posterior odds = prior odds x likelihood ratio of that alert.
+   The alert level is set by the signal rules in ``signals.py``, or by hand for a what-if shock.
 """
 
 from __future__ import annotations
@@ -24,9 +26,13 @@ ALERT_LEVELS = {
 
 
 def failure_probability(node: Node, mode: str, horizon_days: float, rng: np.random.Generator,
-                        alert: str = "none", n: int = 4000) -> dict:
+                        alert: str = "none", n: int = 4000, rate_multiplier: float = 1.0,
+                        multiplier_reasons: list[str] | None = None) -> dict:
     shape, rate, reasons = hazard_prior(mode, node.type, node.attrs, node.risk_factors)
-    lam = rng.gamma(shape, 1.0 / rate, n)
+    reasons = reasons + list(multiplier_reasons or [])
+    lam_base = rng.gamma(shape, 1.0 / rate, n)
+    lam = lam_base * rate_multiplier          # same draws, so p - base_p is the effect of the multiplier, not noise
+    base_p = float((1.0 - np.exp(-lam_base * horizon_days / 365.0)).mean())
     p = 1.0 - np.exp(-lam * horizon_days / 365.0)
     prior_mean = float(p.mean())
     level = ALERT_LEVELS.get(alert, ALERT_LEVELS["none"])
@@ -42,10 +48,13 @@ def failure_probability(node: Node, mode: str, horizon_days: float, rng: np.rand
     return {
         "annual_rate": shape / rate,
         "annual_rate_ci": [float(np.quantile(lam, 0.05)), float(np.quantile(lam, 0.95))],
+        "base_p": base_p,
         "prior_p": prior_mean,
         "p": float(p.mean()),
         "p_ci": [float(np.quantile(p, 0.05)), float(np.quantile(p, 0.95))],
         "likelihood_ratio": lr,
+        "alert": alert,
+        "rate_multiplier": rate_multiplier,
         "horizon_days": horizon_days,
         "reasons": reasons,
         "samples": p,

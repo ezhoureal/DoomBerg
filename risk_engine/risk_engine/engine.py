@@ -1,4 +1,13 @@
-"""Orchestrates Discover -> Shock -> Price the exit -> Decide, and keeps analysed positions in memory."""
+"""Orchestrates Discover -> Monitor -> Shock -> Price the exit -> Decide, and keeps analysed positions in memory.
+
+Every screening reads live signals (``signals.py``) to set alert levels and a contagion multiplier
+(``contagion.py``) to make failure rates time-varying. With a ``History`` attached, a screening can be
+recorded: the run, its forecasts and signals are stored, compared with the previous run of the same
+position, and changes raise notifications (``notify.py``).
+
+The Monte Carlo seed is fixed on purpose: with common random numbers, a change between two runs
+comes from the live inputs, not from sampling noise.
+"""
 
 from __future__ import annotations
 
@@ -10,14 +19,17 @@ from pathlib import Path
 
 import numpy as np
 
+from . import contagion, notify
 from .decision import decide
 from .discovery import Discovery, PositionRequest
 from .exit_cost import exit_cost
 from .explain import explain
 from .failures import MODES, applicable_modes, severity_prior
 from .graph import DependencyGraph
+from .history import History
 from .probability import ALERT_LEVELS, failure_probability
 from .propagation import Simulator, explain_paths, histogram, summarize
+from .signals import LEVEL_RANK, alert_levels, detect, max_level, node_class, observe
 
 INCIDENTS = json.loads((Path(__file__).parent / "data" / "incidents.json").read_text(encoding="utf-8"))["incidents"]
 
@@ -63,19 +75,35 @@ def _clean(obj):
     return obj
 
 
+def position_key(req: PositionRequest, horizon_days: float) -> str:
+    """Runs are comparable only at the same size and horizon (both move the exit cost and the probabilities)."""
+    return f"{req.kind}:{req.chain_id}:{req.address.strip().lower()}:{req.size_usd:.0f}:{horizon_days:g}d"
+
+
 class RiskEngine:
-    def __init__(self, seed: int = 11):
+    def __init__(self, seed: int = 11, history: History | None = None):
         self.store: dict[str, dict] = {}
         self.seed = seed
+        self.history = history
 
     # ------------------------------------------------------------------ analyse
-    def analyze(self, req: PositionRequest, horizon_days: float = 30) -> dict:
-        g = Discovery(req).run()
-        pid = hashlib.sha1(f"{req.kind}{req.address.lower()}{req.chain_id}{req.size_usd}{time.time()}".encode()).hexdigest()[:12]
+    def analyze(self, req: PositionRequest, horizon_days: float = 30, record: bool = False, now: float | None = None) -> dict:
+        return self.evaluate(Discovery(req).run(), req, horizon_days, record=record, now=now)
+
+    def evaluate(self, g: DependencyGraph, req: PositionRequest, horizon_days: float = 30, record: bool = False,
+                 now: float | None = None) -> dict:
+        """Screen a discovered graph. ``record`` stores the run in the history and raises notifications."""
+        now = now if now is not None else time.time()
+        pid = hashlib.sha1(f"{req.kind}{req.address.lower()}{req.chain_id}{req.size_usd}{now}{time.time()}".encode()).hexdigest()[:12]
         rng = np.random.default_rng(self.seed)
-        screening = self.screen(g, horizon_days, rng)
+        signals = detect(g, now, self.history)
+        levels = alert_levels(signals)
+        keys = [(nid, m.id) for nid, node in g.nodes.items() if node.type != "position" for m in applicable_modes(node.type, node.attrs)]
+        mults = contagion.multipliers(g, keys, contagion.gather_events(g, signals, now, self.history), now)
+        screening = self.screen(g, horizon_days, rng, levels, mults)
         calm_exit = exit_cost(g, req.size_usd, rng, stressed=False)
-        self.store[pid] = {"req": req, "graph": g, "screening": screening, "horizon": horizon_days}
+        monitor = self.monitor(g, req, horizon_days, screening, calm_exit, signals, levels, mults, record, now)
+        self.store[pid] = {"req": req, "graph": g, "screening": screening, "horizon": horizon_days, "levels": levels, "mults": mults}
         graph = g.to_dict()
         for n in graph["nodes"]:
             r = screening["nodes"].get(n["id"])
@@ -85,7 +113,8 @@ class RiskEngine:
             "position_id": pid,
             "request": asdict(req),
             "graph": graph,
-            "screening": {k: v for k, v in screening.items() if k != "nodes"},
+            "screening": {k: v for k, v in screening.items() if k not in ("nodes", "rows")},
+            "monitor": monitor,
             "exit_now": calm_exit,
             "stats": {"nodes": len(g.nodes), "edges": len(g.edges),
                       "evidence": sum(len(n.evidence) for n in g.nodes.values()) + sum(len(e.evidence) for e in g.edges.values()),
@@ -94,20 +123,32 @@ class RiskEngine:
                       "warnings": g.nodes["position"].attrs.get("warnings")},
         })
 
-    def screen(self, g: DependencyGraph, horizon_days: float, rng: np.random.Generator, n: int = 500) -> dict:
-        """Base-rate risk of every (component, failure mode): P(fail in horizon) x E[position loss | fail]."""
+    def screen(self, g: DependencyGraph, horizon_days: float, rng: np.random.Generator,
+               levels: dict | None = None, mults: dict | None = None, n: int = 500) -> dict:
+        """Risk of every (component, failure mode): P(fail in horizon) x E[position loss | fail].
+
+        P starts from the base rate, is scaled by the contagion multiplier and updated by the alert
+        level the live signals set for that component and mode.
+        """
+        levels, mults = levels or {}, mults or {}
         sim = Simulator(g, seed=self.seed)
         rows = []
         for nid, node in g.nodes.items():
             if node.type == "position":
                 continue
             for m in applicable_modes(node.type, node.attrs):
-                prob = failure_probability(node, m.id, horizon_days, rng, n=1000)
+                lv = levels.get((nid, m.id))
+                mu = mults.get((nid, m.id)) or {"multiplier": 1.0, "reasons": []}
+                prob = failure_probability(node, m.id, horizon_days, rng, alert=lv["level"] if lv else "none", n=1000,
+                                           rate_multiplier=mu["multiplier"], multiplier_reasons=mu["reasons"])
                 res = sim.run(nid, m.id, n=n)
                 lgf = float(res.loss[g.root].mean())
-                rows.append({"node_id": nid, "label": node.label, "type": node.type, "mode": m.id, "mode_label": m.label,
-                             "p": prob["p"], "annual_rate": prob["annual_rate"], "loss_given_failure": lgf,
-                             "expected_loss_pct": prob["p"] * lgf, "reasons": prob["reasons"]})
+                rows.append({"node_id": nid, "label": node.label, "type": node.type, "node_class": node_class(node),
+                             "mode": m.id, "mode_label": m.label, "p": prob["p"], "prior_p": prob["prior_p"], "base_p": prob["base_p"],
+                             "annual_rate": prob["annual_rate"], "loss_given_failure": lgf,
+                             "expected_loss_pct": prob["p"] * lgf, "reasons": prob["reasons"],
+                             "alert": lv["level"] if lv else "none", "likelihood_ratio": prob["likelihood_ratio"],
+                             "rate_multiplier": mu["multiplier"], "signals": [s["detail"] for s in lv["signals"]] if lv else []})
         total = sum(r["expected_loss_pct"] for r in rows) or 1e-12
         nodes: dict[str, dict] = {}
         for r in rows:
@@ -115,17 +156,75 @@ class RiskEngine:
             d = nodes.setdefault(r["node_id"], {"expected_loss_pct": 0.0, "share": 0.0, "modes": []})
             d["expected_loss_pct"] += r["expected_loss_pct"]
             d["share"] += r["share"]
-            d["modes"].append({k: r[k] for k in ("mode", "mode_label", "p", "loss_given_failure", "expected_loss_pct", "share")})
+            d["modes"].append({k: r[k] for k in ("mode", "mode_label", "p", "loss_given_failure", "expected_loss_pct", "share", "alert")})
         for d in nodes.values():
             d["modes"].sort(key=lambda x: -x["expected_loss_pct"])
             d["top_mode"] = d["modes"][0]["mode"] if d["modes"] else None
         rows.sort(key=lambda r: -r["expected_loss_pct"])
         p_any = 1 - float(np.prod([1 - r["p"] for r in rows if r["loss_given_failure"] > 1e-4]))
         return {"horizon_days": horizon_days, "total_expected_loss_pct": total, "p_any_loss_event": p_any,
-                "top": rows[:12], "nodes": nodes}
+                "top": rows[:12], "nodes": nodes, "rows": rows}
+
+    # ------------------------------------------------------------------ monitor
+    def monitor(self, g: DependencyGraph, req: PositionRequest, horizon_days: float, screening: dict, calm_exit: dict,
+                signals: list, levels: dict, mults: dict, record: bool, now: float) -> dict:
+        """Daily verdict: exit if the risk today's news adds on top of the base rates is worth more than leaving.
+
+        Base rates are the risk accepted when the position was entered (the yield pays for it); judged
+        against exit cost on their own they would say EXIT every day. What changes from day to day is
+        the excess: probability raised by live signals and contagion, p - base_p. So the rule of
+        ``decide()`` is applied to that excess: exit if sum((p - base_p) x loss) x withdrawable share
+        > exit cost. A component's break-even is base_p + exit cost / (loss x withdrawable share).
+        """
+        c, f = calm_exit["cost_pct"], min(max(calm_exit["instant_fraction"], 0.0), 1.0)
+        rows = screening["rows"]
+        for r in rows:
+            lf = r["loss_given_failure"] * f
+            r["break_even_p"] = r["base_p"] + c / lf if lf > 1e-12 and r["base_p"] + c / lf < 1 else None
+            r["above_break_even"] = r["break_even_p"] is not None and r["p"] > r["break_even_p"]
+        el = screening["total_expected_loss_pct"]
+        base_el = sum(r["base_p"] * r["loss_given_failure"] for r in rows)
+        excess = max(el - base_el, 0.0)
+        verdict = "EXIT" if excess * f > c else "STAY"
+        key = position_key(req, horizon_days)
+        sig = [{**s.to_dict(), "node_class": node_class(g.nodes[s.node_id])} for s in signals]
+        run = {
+            "ts": now, "position_key": key, "label": g.nodes[g.root].label, "kind": req.kind, "address": req.address,
+            "chain_id": req.chain_id, "size_usd": req.size_usd, "horizon_days": horizon_days, "verdict": verdict,
+            "expected_loss_pct": el, "baseline_loss_pct": base_el, "avoidable_loss_pct": excess * f, "p_any": screening["p_any_loss_event"],
+            "exit_cost_pct": c, "instant_fraction": f, "max_alert": max_level(levels),
+            "contagion": max((m["multiplier"] for m in mults.values()), default=1.0),
+            "summary": {"rows": {f"{r['node_id']}|{r['mode']}": {
+                "node_id": r["node_id"], "mode": r["mode"], "label": r["label"], "mode_label": r["mode_label"], "p": r["p"],
+                "break_even_p": r["break_even_p"], "above": r["above_break_even"], "alert": r["alert"],
+                "el": r["expected_loss_pct"], "signals": r["signals"]} for r in rows}},
+        }
+        prev = self.history.last_run(key, before=now) if self.history else None
+        events = notify.diff(prev, run, now)
+        if record and self.history:
+            self.history.record_run(run, rows, sig, observe(g))
+            self.history.add_events(events)
+            notify.deliver(events)
+        above = sorted((r for r in rows if r["above_break_even"]), key=lambda r: -r["p"] / r["break_even_p"])
+        return {
+            "position_key": key, "label": run["label"], "verdict": verdict, "expected_loss_pct": el, "baseline_loss_pct": base_el,
+            "excess_loss_pct": excess, "avoidable_loss_pct": excess * f,
+            "exit_cost_pct": c, "instant_fraction": f, "max_alert": run["max_alert"],
+            "regime": contagion.regime(mults), "contagion_max": run["contagion"],
+            "signals": sorted(sig, key=lambda s: -LEVEL_RANK[s["level"]]),
+            "alerts": sorted(({"node_id": k[0], "label": g.nodes[k[0]].label, "mode": k[1], "mode_label": MODES[k[1]].label,
+                               "level": v["level"], "signals": v["signals"]} for k, v in levels.items()),
+                             key=lambda a: -LEVEL_RANK[a["level"]]),
+            "above_break_even": [{k: r[k] for k in ("node_id", "label", "mode", "mode_label", "p", "break_even_p", "alert")} for r in above],
+            "previous": {k: prev[k] for k in ("ts", "verdict", "expected_loss_pct", "baseline_loss_pct", "avoidable_loss_pct", "p_any",
+                                              "exit_cost_pct", "max_alert")}
+                        if prev else None,
+            "events": events,
+            "recorded": bool(record and self.history),
+        }
 
     # ------------------------------------------------------------------ shock
-    def shock(self, position_id: str, node_id: str, mode: str, alert: str = "alert",
+    def shock(self, position_id: str, node_id: str, mode: str, alert: str = "auto",
               probability_override: float | None = None, exit_cost_override: float | None = None,
               horizon_days: float | None = None, n: int = 5000, fixed_severity: float | None = None,
               use_llm: bool = True, incident: dict | None = None) -> dict:
@@ -143,10 +242,16 @@ class RiskEngine:
             raise ValueError(f"Failure mode '{mode}' does not apply to {node.label} ({node.type})")
         horizon = horizon_days or entry["horizon"]
         rng = np.random.default_rng(self.seed + 1)
+        live = entry["levels"].get((node_id, mode))
+        source = "signals" if alert == "auto" else "manual"
+        if alert == "auto":
+            alert = live["level"] if live else "none"
+        mu = entry["mults"].get((node_id, mode)) or {"multiplier": 1.0, "reasons": []}
 
         sim = Simulator(g, seed=self.seed + 2).run(node_id, mode, n=n, fixed_severity=fixed_severity)
         pos_loss = sim.loss[g.root]
-        prob = failure_probability(node, mode, horizon, rng, alert=alert, n=n)
+        prob = failure_probability(node, mode, horizon, rng, alert=alert, n=n,
+                                   rate_multiplier=mu["multiplier"], multiplier_reasons=mu["reasons"])
 
         denom = next((e.target for e in g.out_edges(g.root) if e.type == "denominated_in"), None)
         sell = denom if denom and float(sim.loss[denom].mean()) > 1e-3 else None
@@ -167,7 +272,8 @@ class RiskEngine:
             "position": {"label": g.nodes[g.root].label, "size_usd": req.size_usd, "book_usd": req.book_usd, "kind": req.kind},
             "shock": {"node_id": node_id, "node_label": node.label, "node_type": node.type, "mode": mode,
                       "mode_label": MODES[mode].label, "description": MODES[mode].description,
-                      "alert": alert, "alert_label": ALERT_LEVELS.get(alert, {}).get("label"),
+                      "alert": alert, "alert_label": ALERT_LEVELS.get(alert, {}).get("label"), "alert_source": source,
+                      "signals": live["signals"] if live else [],
                       "severity": summarize(sim.severity), "incident": incident},
             "probability": prob,
             "loss": {**summarize(pos_loss), "histogram": histogram(pos_loss)},
@@ -255,18 +361,41 @@ class RiskEngine:
             "While the chain is halted a held PT cannot be sold; its price drifts with the volatility of its asset class",
             "Borrowers sit at 70-97% of LLTV on average; liquidators prevent 30-80% of insolvency only when the oracle sees the move",
             "Over-borrowing drains up to 100% of idle market liquidity once LLTV x oracle over-pricing > 1",
-            "Probabilities: Gamma-Poisson base rates x risk-factor multipliers, then Bayesian update by the alert likelihood ratio",
+            "Probabilities: Gamma-Poisson base rates x risk-factor and contagion multipliers, then Bayesian update by the alert likelihood ratio",
         ]
         return a + ex.get("assumptions", [])
 
+    def run_watchlist(self, items: list[dict], horizon_days: float = 30) -> list[dict]:
+        """Screen and record every position of a watchlist (dicts shaped like ``PRESETS``). One failure does not stop the rest."""
+        out = []
+        for it in items:
+            req = PositionRequest(it.get("kind", "token"), it["address"], int(it.get("chain_id", 1)),
+                                  float(it.get("size_usd", 1_000_000)), float(it.get("book_usd", 10_000_000)), it.get("label"))
+            h = float(it.get("horizon_days", horizon_days))
+            try:
+                a = self.analyze(req, h, record=True)
+                m = a["monitor"]
+                self.store.pop(a["position_id"], None)
+                out.append({"ok": True, **{k: m[k] for k in ("label", "position_key", "verdict", "expected_loss_pct", "exit_cost_pct",
+                                                             "max_alert", "regime")},
+                            "events": m["events"]})
+            except Exception as e:  # noqa: BLE001 - keep monitoring the other positions
+                out.append({"label": it.get("label") or it["address"], "ok": False, "error": f"{type(e).__name__}: {e}"})
+        return out
+
     # ------------------------------------------------------------------ misc
     def node_modes(self, position_id: str, node_id: str, horizon_days: float = 30) -> list[dict]:
-        g: DependencyGraph = self.store[position_id]["graph"]
+        entry = self.store[position_id]
+        g: DependencyGraph = entry["graph"]
         node = g.nodes[node_id]
         rng = np.random.default_rng(self.seed)
         out = []
         for m in applicable_modes(node.type, node.attrs):
-            pr = failure_probability(node, m.id, horizon_days, rng, n=1000)
+            lv = entry["levels"].get((node_id, m.id))
+            mu = entry["mults"].get((node_id, m.id)) or {"multiplier": 1.0, "reasons": []}
+            pr = failure_probability(node, m.id, horizon_days, rng, alert=lv["level"] if lv else "none", n=1000,
+                                     rate_multiplier=mu["multiplier"], multiplier_reasons=mu["reasons"])
             out.append({"id": m.id, "label": m.label, "description": m.description, "p": pr["p"],
-                        "annual_rate": pr["annual_rate"], "reasons": pr["reasons"]})
+                        "annual_rate": pr["annual_rate"], "reasons": pr["reasons"], "alert": pr["alert"],
+                        "signals": lv["signals"] if lv else []})
         return out

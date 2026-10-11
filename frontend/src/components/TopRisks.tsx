@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Analysis } from "../types";
 import { TYPE_META, pct, riskColor, usd } from "../format";
+import LiveMonitor from "./LiveMonitor";
 
 export default function TopRisks({
   analysis,
@@ -14,6 +15,7 @@ export default function TopRisks({
   const size = analysis.request.size_usd;
   return (
     <div className="panel-section">
+      <LiveMonitor analysis={analysis} onPick={onPick} />
       <div className="sub-h" style={{ marginTop: 0 }}>
         Modeled risk contributors
       </div>
