@@ -15,8 +15,10 @@ import PositionForm from "./components/PositionForm";
 import InvestmentWorkspace from "./components/InvestmentWorkspace";
 import InvestmentTabs from "./components/InvestmentTabs";
 import InvestmentOverview from "./components/InvestmentOverview";
+import MonitorPanel from "./components/MonitorPanel";
 import {
   BACKUP_KEY,
+  mergeBackup,
   parseWorkspace,
   serializeWorkspace,
   STORAGE_KEY,
@@ -47,6 +49,7 @@ const WorkspaceTab = memo(function WorkspaceTab({
   onAdd,
   dispatch,
   onOverview,
+  onMonitor,
   saveError,
   notice,
   onDismissNotice,
@@ -59,6 +62,7 @@ const WorkspaceTab = memo(function WorkspaceTab({
   onAdd: () => void;
   dispatch: Dispatch<InvestmentsAction>;
   onOverview: () => void;
+  onMonitor: () => void;
   saveError: string | null;
   notice: string | null;
   onDismissNotice: () => void;
@@ -104,6 +108,7 @@ const WorkspaceTab = memo(function WorkspaceTab({
         onScenario={onScenario}
         onInvalid={onInvalid}
         onOverview={onOverview}
+        onMonitor={onMonitor}
         saveError={saveError}
         notice={notice}
         onDismissNotice={onDismissNotice}
@@ -118,13 +123,27 @@ function loadWorkspace() {
   let raw: string | null = null;
   try {
     raw = window.localStorage.getItem(STORAGE_KEY);
-    const saved = parseWorkspace(raw);
-    if (saved.skipped) window.localStorage.setItem(BACKUP_KEY, raw!);
+    let saved = parseWorkspace(raw);
+    // Records an earlier build left out are restored once they validate.
+    const backupRaw = window.localStorage.getItem(BACKUP_KEY);
+    let recovered = 0,
+      remaining = 0;
+    if (backupRaw) {
+      ({ saved, recovered, remaining } = mergeBackup(saved, backupRaw));
+    }
+    // Don't overwrite a backup that still holds records nothing could restore.
+    if (saved.skipped && !(backupRaw && remaining))
+      window.localStorage.setItem(BACKUP_KEY, raw!);
+    else if (backupRaw && !remaining && !saved.skipped)
+      window.localStorage.removeItem(BACKUP_KEY);
+    const plural = (n: number) => `record${n === 1 ? "" : "s"}`;
     return {
       ...saved,
       error: saved.skipped
-        ? `${saved.skipped} saved investment or scenario record${saved.skipped === 1 ? "" : "s"} could not be restored and ${saved.skipped === 1 ? "was" : "were"} left out. The original data is kept in this browser under ${BACKUP_KEY}.`
-        : null,
+        ? `${saved.skipped} saved investment or scenario ${plural(saved.skipped)} could not be restored and ${saved.skipped === 1 ? "was" : "were"} left out. The original data is kept in this browser under ${BACKUP_KEY}.`
+        : recovered
+          ? `Restored ${recovered} investment or scenario ${plural(recovered)} that an earlier version left out.`
+          : null,
     };
   } catch {
     try {
@@ -168,6 +187,7 @@ export default function App() {
   const [restoreNotice, setRestoreNotice] = useState(loaded.error);
   const onDismissNotice = useCallback(() => setRestoreNotice(null), []);
   const [overviewOpen, setOverviewOpen] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
   const [positionOpen, setPositionOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -178,6 +198,7 @@ export default function App() {
     setPositionOpen(true);
   }, []);
   const onOverview = useCallback(() => setOverviewOpen(true), []);
+  const onMonitor = useCallback(() => setMonitorOpen(true), []);
   // Investments closed here, saved so other open tabs drop them on merge.
   const closed = useRef(new Set(loaded.closed));
   // Start from what was loaded, so mounting doesn't rewrite unchanged data.
@@ -315,6 +336,7 @@ export default function App() {
           onScenario={noop}
           onInvalid={noop}
           onOverview={onOverview}
+          onMonitor={onMonitor}
           saveError={saveError}
           notice={restoreNotice}
           onDismissNotice={onDismissNotice}
@@ -331,11 +353,20 @@ export default function App() {
           onAdd={onAdd}
           dispatch={dispatch}
           onOverview={onOverview}
+          onMonitor={onMonitor}
           saveError={saveError}
           notice={restoreNotice}
           onDismissNotice={onDismissNotice}
         />
       ))}
+      <MonitorPanel
+        open={monitorOpen}
+        current={
+          investments.items.find((i) => i.id === investments.activeId)
+            ?.analysis ?? null
+        }
+        onClose={() => setMonitorOpen(false)}
+      />
       <InvestmentOverview
         open={overviewOpen}
         items={investments.items}

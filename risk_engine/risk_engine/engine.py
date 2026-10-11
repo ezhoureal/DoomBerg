@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -27,9 +28,10 @@ from .explain import explain
 from .failures import MODES, applicable_modes, severity_prior
 from .graph import DependencyGraph
 from .history import History
+from .leverage import health as leverage_health
 from .probability import ALERT_LEVELS, failure_probability
 from .propagation import Simulator, explain_paths, histogram, summarize
-from .signals import LEVEL_RANK, alert_levels, detect, max_level, node_class, observe
+from .signals import LEVEL_RANK, alert_levels, data_issues, detect, max_level, node_class, observe
 
 INCIDENTS = json.loads((Path(__file__).parent / "data" / "incidents.json").read_text(encoding="utf-8"))["incidents"]
 
@@ -58,6 +60,13 @@ PRESETS = [
     {"id": "pt-wsteth", "label": "PT-wstETH (held)", "kind": "token", "chain_id": 1,
      "address": "0xb253eff1104802b97ac7e3ac9fdd73aece295a2c", "size_usd": 1_000_000,
      "note": "Lido wrapped staked ETH: blue-chip LST underlying"},
+    {"id": "btc-borrow-pt-susde", "label": "cbBTC collateral -> borrow USDC -> PT-sUSDe", "kind": "borrow", "chain_id": 1,
+     "address": "0x64d65c9a2d91c36d56fbc42d69e979335320169b3df63bf92789e2c8883fcc64", "size_usd": 1_000_000,
+     "ltv": 0.40, "deploy_address": "0xb195b618ea52b77cb2a58846f452f59f8dfa9390",
+     "note": "The Bitcoin-client strategy: keep the BTC as collateral, borrow USDC at 40% LTV, earn the PT's fixed yield"},
+    {"id": "pt-susde-loop", "label": "PT-sUSDe loop (borrow USDC at 80% LTV)", "kind": "borrow", "chain_id": 1,
+     "address": "0x5613b170ded221c588b6e9637b910f49e5508680ceede207f44aa72e5c46cb05", "size_usd": 1_000_000,
+     "ltv": 0.80, "note": "The brief's layer 5 read literally: the PT itself posted as collateral, levered 5x"},
 ]
 
 
@@ -76,8 +85,24 @@ def _clean(obj):
 
 
 def position_key(req: PositionRequest, horizon_days: float) -> str:
-    """Runs are comparable only at the same size and horizon (both move the exit cost and the probabilities)."""
-    return f"{req.kind}:{req.chain_id}:{req.address.strip().lower()}:{req.size_usd:.0f}:{horizon_days:g}d"
+    """Runs are comparable only at the same size and horizon (both move the exit cost and the probabilities),
+    and for a borrow position at the same leverage and deploy target. A borrower read from chain is keyed by its
+    account: its size and LTV move every day, and the key must be known before discovery reads them."""
+    base = f"{req.kind}:{req.chain_id}:{req.address.strip().lower()}"
+    if req.kind == "borrow":
+        deploy = (req.deploy_address or "").strip().lower()
+        if req.account and req.account.strip():
+            return f"{base}:acct:{req.account.strip().lower()}:{horizon_days:g}d:{deploy}"
+        return f"{base}:{req.size_usd:.0f}:{horizon_days:g}d:ltv{req.ltv or 0:.3f}:{deploy}"
+    return f"{base}:{req.size_usd:.0f}:{horizon_days:g}d"
+
+
+def request_from(it: dict) -> PositionRequest:
+    """A ``PositionRequest`` from a preset or watchlist dict."""
+    ltv = it.get("ltv")
+    return PositionRequest(it.get("kind", "token"), it["address"], int(it.get("chain_id", 1)),
+                           float(it.get("size_usd", 1_000_000)), float(it.get("book_usd") or 10_000_000), it.get("label"),
+                           float(ltv) if ltv is not None else None, it.get("deploy_address") or None, it.get("account") or None)
 
 
 class RiskEngine:
@@ -102,7 +127,8 @@ class RiskEngine:
         mults = contagion.multipliers(g, keys, contagion.gather_events(g, signals, now, self.history), now)
         screening = self.screen(g, horizon_days, rng, levels, mults)
         calm_exit = exit_cost(g, req.size_usd, rng, stressed=False)
-        monitor = self.monitor(g, req, horizon_days, screening, calm_exit, signals, levels, mults, record, now)
+        lev = leverage_health(g, horizon_days)
+        monitor = self.monitor(g, req, horizon_days, screening, calm_exit, signals, levels, mults, record, now, lev)
         self.store[pid] = {"req": req, "graph": g, "screening": screening, "horizon": horizon_days, "levels": levels, "mults": mults}
         graph = g.to_dict()
         for n in graph["nodes"]:
@@ -116,6 +142,7 @@ class RiskEngine:
             "screening": {k: v for k, v in screening.items() if k not in ("nodes", "rows")},
             "monitor": monitor,
             "exit_now": calm_exit,
+            "leverage": lev,
             "stats": {"nodes": len(g.nodes), "edges": len(g.edges),
                       "evidence": sum(len(n.evidence) for n in g.nodes.values()) + sum(len(e.evidence) for e in g.edges.values()),
                       "depth": max((n.layer for n in g.nodes.values()), default=0),
@@ -138,6 +165,11 @@ class RiskEngine:
                 continue
             for m in applicable_modes(node.type, node.attrs):
                 lv = levels.get((nid, m.id))
+                if m.id == "oracle_stale" and lv and all(
+                    s.get("origin_node_id", nid) != nid for s in lv["signals"]
+                ):
+                    # The parent displays its feed's warning, but the feed owns the forecast.
+                    continue
                 mu = mults.get((nid, m.id)) or {"multiplier": 1.0, "reasons": []}
                 prob = failure_probability(node, m.id, horizon_days, rng, alert=lv["level"] if lv else "none", n=1000,
                                            rate_multiplier=mu["multiplier"], multiplier_reasons=mu["reasons"])
@@ -167,34 +199,43 @@ class RiskEngine:
 
     # ------------------------------------------------------------------ monitor
     def monitor(self, g: DependencyGraph, req: PositionRequest, horizon_days: float, screening: dict, calm_exit: dict,
-                signals: list, levels: dict, mults: dict, record: bool, now: float) -> dict:
-        """Daily verdict: exit if the risk today's news adds on top of the base rates is worth more than leaving.
+                signals: list, levels: dict, mults: dict, record: bool, now: float, lev: dict | None = None) -> dict:
+        """Exit if (expected loss - yield given up) x withdrawable share > exit cost, base-rate risk included.
 
-        Base rates are the risk accepted when the position was entered (the yield pays for it); judged
-        against exit cost on their own they would say EXIT every day. What changes from day to day is
-        the excess: probability raised by live signals and contagion, p - base_p. So the rule of
-        ``decide()`` is applied to that excess: exit if sum((p - base_p) x loss) x withdrawable share
-        > exit cost. A component's break-even is base_p + exit cost / (loss x withdrawable share).
+        Staying earns the position's yield (PT implied APY, or the market's supply APY) over the horizon.
+        The exit cost already charges the yield lost while redeploying, so only the rest of the horizon is
+        credited, and the exited capital is assumed to earn nothing after that.
+        Missing required readings suppress an actionable verdict and produce REVIEW.
+        A borrow position also carries the expected penalty of being liquidated by an ordinary price move
+        (``leverage.health``). It is a base rate, so it adds to the baseline as well.
         """
         c, f = calm_exit["cost_pct"], min(max(calm_exit["instant_fraction"], 0.0), 1.0)
+        yld = (calm_exit.get("apy") or 0.0) * max(horizon_days - calm_exit.get("redeploy_days", 0.0), 0.0) / 365
         rows = screening["rows"]
         for r in rows:
             lf = r["loss_given_failure"] * f
-            r["break_even_p"] = r["base_p"] + c / lf if lf > 1e-12 and r["base_p"] + c / lf < 1 else None
+            r["break_even_p"] = c / lf if lf > 1e-12 and c / lf < 1 else None
             r["above_break_even"] = r["break_even_p"] is not None and r["p"] > r["break_even_p"]
-        el = screening["total_expected_loss_pct"]
-        base_el = sum(r["base_p"] * r["loss_given_failure"] for r in rows)
+        liq = lev["expected_penalty_pct"] if lev else 0.0
+        el = screening["total_expected_loss_pct"] + liq
+        base_el = sum(r["base_p"] * r["loss_given_failure"] for r in rows) + liq
         excess = max(el - base_el, 0.0)
-        verdict = "EXIT" if excess * f > c else "STAY"
+        net = (el - yld) * f
+        model_verdict = "EXIT" if net > c else "STAY"
+        issues = data_issues(g)
+        verdict = "REVIEW" if issues else model_verdict
         key = position_key(req, horizon_days)
-        sig = [{**s.to_dict(), "node_class": node_class(g.nodes[s.node_id])} for s in signals]
+        sig = [{**s.to_dict(), "node_class": node_class(g.nodes[s.origin_node_id or s.node_id]),
+                "effective_level": levels[(s.node_id, s.mode)]["level"]} for s in signals]
         run = {
             "ts": now, "position_key": key, "label": g.nodes[g.root].label, "kind": req.kind, "address": req.address,
             "chain_id": req.chain_id, "size_usd": req.size_usd, "horizon_days": horizon_days, "verdict": verdict,
-            "expected_loss_pct": el, "baseline_loss_pct": base_el, "avoidable_loss_pct": excess * f, "p_any": screening["p_any_loss_event"],
+            "expected_loss_pct": el, "baseline_loss_pct": base_el, "avoidable_loss_pct": el * f, "p_any": screening["p_any_loss_event"],
+            "yield_pct": yld, "net_loss_pct": net, "liquidation_loss_pct": liq,
             "exit_cost_pct": c, "instant_fraction": f, "max_alert": max_level(levels),
             "contagion": max((m["multiplier"] for m in mults.values()), default=1.0),
-            "summary": {"rows": {f"{r['node_id']}|{r['mode']}": {
+            "summary": {"data_issues": issues, "model_verdict": model_verdict,
+                        "decision_rule": "net_of_yield", "rows": {f"{r['node_id']}|{r['mode']}": {
                 "node_id": r["node_id"], "mode": r["mode"], "label": r["label"], "mode_label": r["mode_label"], "p": r["p"],
                 "break_even_p": r["break_even_p"], "above": r["above_break_even"], "alert": r["alert"],
                 "el": r["expected_loss_pct"], "signals": r["signals"]} for r in rows}},
@@ -202,13 +243,17 @@ class RiskEngine:
         prev = self.history.last_run(key, before=now) if self.history else None
         events = notify.diff(prev, run, now)
         if record and self.history:
-            self.history.record_run(run, rows, sig, observe(g))
+            # Unknown readings must not create apparently valid calibration forecasts.
+            self.history.record_run(run, [] if issues else rows, sig, observe(g))
             self.history.add_events(events)
             notify.deliver(events)
         above = sorted((r for r in rows if r["above_break_even"]), key=lambda r: -r["p"] / r["break_even_p"])
         return {
             "position_key": key, "label": run["label"], "verdict": verdict, "expected_loss_pct": el, "baseline_loss_pct": base_el,
-            "excess_loss_pct": excess, "avoidable_loss_pct": excess * f,
+            "excess_loss_pct": excess, "avoidable_loss_pct": el * f, "yield_pct": yld, "net_loss_pct": net,
+            "liquidation_loss_pct": liq,
+            "model_verdict": model_verdict, "data_status": "incomplete" if issues else "complete", "data_issues": issues,
+            "decision_rule": "net_of_yield", "execution_status": "blocked" if f == 0 else "available",
             "exit_cost_pct": c, "instant_fraction": f, "max_alert": run["max_alert"],
             "regime": contagion.regime(mults), "contagion_max": run["contagion"],
             "signals": sorted(sig, key=lambda s: -LEVEL_RANK[s["level"]]),
@@ -216,8 +261,8 @@ class RiskEngine:
                                "level": v["level"], "signals": v["signals"]} for k, v in levels.items()),
                              key=lambda a: -LEVEL_RANK[a["level"]]),
             "above_break_even": [{k: r[k] for k in ("node_id", "label", "mode", "mode_label", "p", "break_even_p", "alert")} for r in above],
-            "previous": {k: prev[k] for k in ("ts", "verdict", "expected_loss_pct", "baseline_loss_pct", "avoidable_loss_pct", "p_any",
-                                              "exit_cost_pct", "max_alert")}
+            "previous": {k: prev.get(k) for k in ("ts", "verdict", "expected_loss_pct", "baseline_loss_pct", "avoidable_loss_pct", "p_any",
+                                                  "yield_pct", "net_loss_pct", "exit_cost_pct", "max_alert")}
                         if prev else None,
             "events": events,
             "recorded": bool(record and self.history),
@@ -282,10 +327,11 @@ class RiskEngine:
             "paths": paths,
             "impacted": impacted[:25],
             "node_losses": {k: float(v.mean()) for k, v in sim.loss.items()},
+            "leverage": leverage_health(g, horizon),
             "findings": self.findings(g, paths),
-            "assumptions": self.assumptions(mode, sev_mean, sev_kappa, horizon, n, ex, fixed_severity),
+            "assumptions": self.assumptions(mode, sev_mean, sev_kappa, horizon, n, ex, fixed_severity, req.kind == "borrow"),
         }
-        result["explanation"] = explain(_clean(result)) if use_llm else None
+        result["explanation"] = explain(_clean(result), use_llm=use_llm)
         return _clean(result)
 
     def replay(self, position_id: str, incident_id: str, **kw) -> dict:
@@ -338,7 +384,24 @@ class RiskEngine:
                     out.append(f"{n.label}: {a['tracking_reason']} (feeds: {', '.join(a.get('feed_descriptions') or []) or 'none'})")
                 if n.type == "feed" and a.get("stale"):
                     out.append(f"Feed {n.label} last updated {int((a.get('age_s') or 0) / 3600)}h ago")
-                if n.type == "market":
+                if n.type == "asset" and a.get("collateral_elsewhere_usd"):
+                    venues = [g.nodes[e.target] for e in g.out_edges(n.id) if e.type == "liquidated_in"]
+                    blind = sum(not g.nodes[o.target].risk_factors.get("tracks_market")
+                                for v in venues for o in g.out_edges(v.id) if o.type == "priced_by")
+                    ratio = a.get("collateral_to_amm")
+                    other = " other" if g.nodes[g.root].attrs.get("kind") == "market" else ""
+                    out.append(f"{n.label}: ${a['collateral_elsewhere_usd']:,.0f} posted as collateral in {len(venues)}{other} lending market(s)"
+                               + (f", {ratio:.1f}x its AMM liquidity" if ratio else "")
+                               + f"; {blind} of them priced by an oracle that does not follow the PT's market price")
+                if n.type == "market" and a.get("role") == "borrow_market":
+                    pa = g.nodes[g.root].attrs
+                    out.append(f"Borrow market {n.label}: LTV {pa['ltv']:.1%} vs LLTV {pa['lltv']:.1%} (health factor "
+                               f"{pa['lltv'] / pa['ltv']:.2f}); an oracle drop of {1 - pa['ltv'] / pa['lltv']:.1%} triggers liquidation "
+                               f"with a {pa['lif'] - 1:.1%} penalty on the debt repaid; borrow APY {(a.get('borrow_apy') or 0):.2%}")
+                elif n.type == "market" and a.get("role") == "collateral_venue":
+                    out.append(f"Collateral venue {n.label}: ${(a.get('collateral_usd') or 0):,.0f} posted against "
+                               f"${(a.get('borrow_usd') or 0):,.0f} borrowed at LLTV {(a.get('lltv') or 0):.1%}")
+                elif n.type == "market":
                     out.append(f"Market {n.label}: utilization {(a.get('utilization') or 0):.0%}, LLTV {(a.get('lltv') or 0):.1%}, "
                                f"idle liquidity ${(a.get('liquidity_usd') or 0):,.0f}, age {a.get('age_days')} days")
                 if n.type == "amm":
@@ -350,7 +413,7 @@ class RiskEngine:
         return out[:8]
 
     @staticmethod
-    def assumptions(mode, sev_mean, sev_kappa, horizon, n, ex, fixed) -> list[str]:
+    def assumptions(mode, sev_mean, sev_kappa, horizon, n, ex, fixed, borrow: bool = False) -> list[str]:
         a = [
             f"Horizon {horizon:g} days (Belem clients can redeem monthly)",
             f"{n:,} Monte Carlo draws",
@@ -361,26 +424,40 @@ class RiskEngine:
             "While the chain is halted a held PT cannot be sold; its price drifts with the volatility of its asset class",
             "Borrowers sit at 70-97% of LLTV on average; liquidators prevent 30-80% of insolvency only when the oracle sees the move",
             "Over-borrowing drains up to 100% of idle market liquidity once LLTV x oracle over-pricing > 1",
+            "Liquidations in other markets holding the PT: 50-100% of the seized PT is sold into its Pendle AMM (constant-product impact); "
+            "the dip is capped where the PT would yield 50-200% APY to maturity, as arbitrageurs buy it back",
             "Probabilities: Gamma-Poisson base rates x risk-factor and contagion multipliers, then Bayesian update by the alert likelihood ratio",
         ]
+        if borrow:
+            a += [
+                "Borrow position: losses are a share of the equity; collateral and deployed-PT losses are levered by collateral / equity",
+                "Liquidation when debt / (collateral at the oracle price) > LLTV; a liquidator repays 50-100% of the debt and seizes "
+                "LIF = min(1.15, 1/(0.3 LLTV + 0.7)) times that in collateral, valued at the oracle price",
+                "A cheaper loan asset makes the debt smaller; a Morpho Blue loss takes the collateral",
+                "Ordinary price moves matter only through liquidation: probability from a driftless lognormal barrier over the horizon",
+            ]
         return a + ex.get("assumptions", [])
 
     def run_watchlist(self, items: list[dict], horizon_days: float = 30) -> list[dict]:
         """Screen and record every position of a watchlist (dicts shaped like ``PRESETS``). One failure does not stop the rest."""
         out = []
         for it in items:
-            req = PositionRequest(it.get("kind", "token"), it["address"], int(it.get("chain_id", 1)),
-                                  float(it.get("size_usd", 1_000_000)), float(it.get("book_usd", 10_000_000)), it.get("label"))
-            h = float(it.get("horizon_days", horizon_days))
             try:
+                req = request_from(it)
+                h = float(it.get("horizon_days", horizon_days))
+                if req.kind not in ("market", "token", "borrow") or not isinstance(req.address, str) or not req.address.strip():
+                    raise ValueError("A token, market or borrow position with an address is required")
+                if req.chain_id <= 0 or any(not math.isfinite(v) or v <= 0 for v in (req.size_usd, req.book_usd, h)) or h > 365:
+                    raise ValueError("Positive finite size, book and chain, and horizon in (0,365] are required")
                 a = self.analyze(req, h, record=True)
                 m = a["monitor"]
                 self.store.pop(a["position_id"], None)
-                out.append({"ok": True, **{k: m[k] for k in ("label", "position_key", "verdict", "expected_loss_pct", "exit_cost_pct",
-                                                             "max_alert", "regime")},
+                out.append({"ok": True, **{k: m[k] for k in ("label", "position_key", "verdict", "expected_loss_pct", "yield_pct",
+                                                             "net_loss_pct", "exit_cost_pct", "max_alert", "regime")},
                             "events": m["events"]})
             except Exception as e:  # noqa: BLE001 - keep monitoring the other positions
-                out.append({"label": it.get("label") or it["address"], "ok": False, "error": f"{type(e).__name__}: {e}"})
+                label = (it.get("label") or it.get("address") or "Invalid position") if isinstance(it, dict) else "Invalid position"
+                out.append({"label": label, "ok": False, "error": f"{type(e).__name__}: {e}"})
         return out
 
     # ------------------------------------------------------------------ misc

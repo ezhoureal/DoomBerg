@@ -171,7 +171,9 @@ function mergeHistory(
 export function investmentLabel(analysis: Analysis): string {
   return (
     analysis.request.label ||
-    (analysis.request.kind === "market"
+    (analysis.request.kind === "borrow"
+      ? analysis.graph.nodes.find((node) => node.id === analysis.graph.root)?.label
+      : analysis.request.kind === "market"
       ? analysis.graph.nodes.find((node) => node.type === "market")?.label
       : analysis.graph.nodes.find(
           (node) => node.type === "asset" && node.attrs.kind === "pt",

@@ -7,6 +7,8 @@ Tables:
 - ``metrics``: raw live readings per component (supply, liquidity, prices), used for 24h-change rules.
 - ``outcomes``: failures that actually happened, recorded by a person (the calibration labels).
 - ``events``: notifications raised when a verdict flips or a probability crosses break-even.
+- ``watchlist``: positions the scheduled monitor screens, one per ``position_key``.
+- ``settings``: monitor settings changed at runtime (the schedule interval).
 
 Each call opens its own connection, so one ``History`` can be shared by the API worker threads.
 """
@@ -46,6 +48,11 @@ CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY, ts REAL NOT NULL, position_key TEXT, label TEXT, kind TEXT NOT NULL, severity TEXT NOT NULL,
     message TEXT NOT NULL, data TEXT);
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
+CREATE TABLE IF NOT EXISTS watchlist (
+    id INTEGER PRIMARY KEY, position_key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, address TEXT NOT NULL,
+    chain_id INTEGER NOT NULL, size_usd REAL NOT NULL, book_usd REAL NOT NULL, horizon_days REAL NOT NULL,
+    label TEXT, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 # A signal not seen for this long has cleared; the next sighting starts a new episode.
@@ -63,6 +70,16 @@ class History:
             self._mem.row_factory = sqlite3.Row
         with self._conn() as c:
             c.executescript(SCHEMA)
+            if "origin_node_id" not in {r[1] for r in c.execute("PRAGMA table_info(signals)")}:
+                c.execute("ALTER TABLE signals ADD COLUMN origin_node_id TEXT")
+            cols = {r[1] for r in c.execute("PRAGMA table_info(runs)")}
+            for col in ("yield_pct", "net_loss_pct"):
+                if col not in cols:
+                    c.execute(f"ALTER TABLE runs ADD COLUMN {col} REAL")
+            cols = {r[1] for r in c.execute("PRAGMA table_info(watchlist)")}
+            for col, typ in (("ltv", "REAL"), ("deploy_address", "TEXT"), ("account", "TEXT")):
+                if col not in cols:
+                    c.execute(f"ALTER TABLE watchlist ADD COLUMN {col} {typ}")
 
     @contextmanager
     def _conn(self):
@@ -85,21 +102,22 @@ class History:
         with self._conn() as c:
             cur = c.execute(
                 "INSERT INTO runs (ts, position_key, label, kind, address, chain_id, size_usd, horizon_days, verdict, "
-                "expected_loss_pct, baseline_loss_pct, avoidable_loss_pct, p_any, exit_cost_pct, instant_fraction, max_alert, contagion, summary) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "expected_loss_pct, baseline_loss_pct, avoidable_loss_pct, p_any, exit_cost_pct, instant_fraction, max_alert, contagion, summary, "
+                "yield_pct, net_loss_pct) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (ts, run["position_key"], run.get("label"), run.get("kind"), run.get("address"), run.get("chain_id"),
                  run.get("size_usd"), run["horizon_days"], run["verdict"], run["expected_loss_pct"], run["baseline_loss_pct"], run["avoidable_loss_pct"],
                  run["p_any"], run["exit_cost_pct"], run["instant_fraction"], run["max_alert"], run.get("contagion"),
-                 json.dumps(run.get("summary") or {})))
+                 json.dumps(run.get("summary") or {}), run.get("yield_pct"), run.get("net_loss_pct")))
             rid = cur.lastrowid
             c.executemany(
                 "INSERT INTO forecasts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 [(rid, ts, run["position_key"], f["node_id"], f.get("node_class"), f["mode"], run["horizon_days"], f["p"],
                   f.get("prior_p"), f.get("alert"), f.get("likelihood_ratio"), f.get("rate_multiplier")) for f in forecasts])
             c.executemany(
-                "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 [(rid, ts, run["position_key"], s["node_id"], s.get("node_class"), s.get("label"), s["mode"], s["rule"],
-                  s["level"], s.get("value"), s.get("detail")) for s in signals])
+                  s.get("effective_level", s["level"]), s.get("value"), s.get("detail"),
+                  s.get("origin_node_id", s["node_id"])) for s in signals])
             c.executemany("INSERT INTO metrics VALUES (?,?,?,?)", [(ts, nid, m, v) for nid, m, v in metrics])
         return rid
 
@@ -114,6 +132,26 @@ class History:
             c.executemany("INSERT INTO events (ts, position_key, label, kind, severity, message, data) VALUES (?,?,?,?,?,?,?)",
                           [(e["ts"], e.get("position_key"), e.get("label"), e["kind"], e["severity"], e["message"],
                             json.dumps(e.get("data") or {})) for e in events])
+
+    def add_watch(self, item: dict, position_key: str) -> int:
+        """Add a position to the watchlist; re-adding the same position updates its label and book."""
+        with self._conn() as c:
+            c.execute("INSERT INTO watchlist (position_key, kind, address, chain_id, size_usd, book_usd, horizon_days, label, created_at, "
+                      "ltv, deploy_address, account) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                      "ON CONFLICT(position_key) DO UPDATE SET label=excluded.label, book_usd=excluded.book_usd",
+                      (position_key, item["kind"], item["address"].strip(), item["chain_id"], item["size_usd"], item["book_usd"],
+                       item["horizon_days"], item.get("label"), time.time(), item.get("ltv"),
+                       (item.get("deploy_address") or "").strip() or None, (item.get("account") or "").strip() or None))
+            return c.execute("SELECT id FROM watchlist WHERE position_key=?", (position_key,)).fetchone()[0]
+
+    def remove_watch(self, watch_id: int) -> bool:
+        with self._conn() as c:
+            return c.execute("DELETE FROM watchlist WHERE id=?", (watch_id,)).rowcount > 0
+
+    def set_setting(self, key: str, value) -> None:
+        with self._conn() as c:
+            c.execute("INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (key, json.dumps(value)))
 
     # ------------------------------------------------------------------ read
     def last_run(self, position_key: str, before: float | None = None) -> dict | None:
@@ -157,8 +195,9 @@ class History:
     def alert_episodes(self, since: float, until: float) -> list[dict]:
         """Episodes of alert-level signals (any position), one event per (component, mode) episode."""
         with self._conn() as c:
-            rows = c.execute("SELECT ts, node_id, node_class, label, mode, level FROM signals WHERE ts>=? AND ts<? "
-                             "ORDER BY node_id, mode, ts", (since, until)).fetchall()
+            rows = c.execute("SELECT ts, COALESCE(origin_node_id,node_id) AS node_id, node_class, label, mode, level "
+                             "FROM signals WHERE ts>=? AND ts<? ORDER BY COALESCE(origin_node_id,node_id), mode, ts",
+                             (since, until)).fetchall()
         out: list[dict] = []
         cur: dict | None = None
         for r in rows:
@@ -190,6 +229,17 @@ class History:
             else:
                 rows = c.execute("SELECT * FROM events ORDER BY ts DESC, id DESC LIMIT ?", (limit,)).fetchall()
         return [{**dict(r), "data": json.loads(r["data"] or "{}")} for r in rows]
+
+    def watchlist(self) -> list[dict]:
+        """Watchlist entries, shaped like the engine presets so ``run_watchlist`` can screen them."""
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM watchlist ORDER BY created_at, id").fetchall()
+        return [dict(r) for r in rows]
+
+    def setting(self, key: str, default=None):
+        with self._conn() as c:
+            row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else default
 
 
 def _run(row: sqlite3.Row, with_summary: bool = True) -> dict:

@@ -12,6 +12,7 @@ import {
   newWorkspaceId,
 } from "../src/ui/workspace.ts";
 import {
+  mergeBackup,
   parseWorkspace,
   restoreWorkspace,
   serializeWorkspace,
@@ -201,6 +202,32 @@ test("unreadable saved workspaces fail, and invalid records are skipped individu
   );
   assert.equal(partial.state.items[0].history.length, 1);
   assert.equal(partial.skipped, 2);
+});
+
+test("borrow investments are restored, and ones an older build dropped come back from the backup", () => {
+  const borrow = {
+    ...analysis("server-b"),
+    request: { ...analysis().request, kind: "borrow", ltv: 0.4 },
+  };
+  const backup = serializeWorkspace(
+    reduce(opened(), { type: "open", id: "tab-b", analysis: borrow }),
+  );
+  const restored = parseWorkspace(backup);
+  assert.equal(restored.skipped, 0);
+  assert.equal(restored.state.items[1].analysis.request.kind, "borrow");
+  // The main key was re-saved without the borrow tab; the backup still has it.
+  const main = parseWorkspace(serializeWorkspace(opened()));
+  const merged = mergeBackup(main, backup);
+  assert.deepEqual(
+    merged.saved.state.items.map((item) => item.id),
+    ["tab-a", "tab-b"],
+  );
+  assert.equal(merged.recovered, 1);
+  assert.equal(merged.remaining, 0);
+  // A tab closed since then stays closed.
+  const closed = mergeBackup({ ...main, closed: ["tab-b"] }, backup);
+  assert.equal(closed.recovered, 0);
+  assert.equal(mergeBackup(main, "not json").remaining, 1);
 });
 
 test("changing a tab to a different position clears its scenario history", () => {

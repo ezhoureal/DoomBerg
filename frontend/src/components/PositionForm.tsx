@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Search, Loader2 } from "lucide-react";
 import { api } from "../api";
-import type { PositionKind, Preset } from "../types";
+import type { BorrowFields, PositionKind, Preset } from "../types";
 import { CHAINS } from "../format";
 import { ROLE_LABELS, type PositionRole } from "../ui/workspace";
 
@@ -13,7 +13,7 @@ type Req = {
   book_usd: number;
   horizon_days: number;
   label?: string;
-};
+} & BorrowFields;
 
 export default function PositionForm({
   onAnalyze,
@@ -37,6 +37,18 @@ export default function PositionForm({
   const [horizon, setHorizon] = useState(initial?.horizon_days ?? 30);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [role, setRole] = useState<PositionRole>(initialRole);
+  const [ltv, setLtv] = useState(initial?.ltv ?? 0.4);
+  const [deploy, setDeploy] = useState(initial?.deploy_address ?? "");
+  const [account, setAccount] = useState(initial?.account ?? "");
+  const borrow = kind === "borrow";
+  const borrowFields = (): BorrowFields =>
+    borrow
+      ? {
+          ltv: account.trim() ? null : ltv,
+          deploy_address: deploy.trim() || null,
+          account: account.trim() || null,
+        }
+      : {};
 
   useEffect(() => {
     api
@@ -55,6 +67,7 @@ export default function PositionForm({
           [
             ["token", "PT token"],
             ["market", "Lending market"],
+            ["borrow", "Borrow (leveraged)"],
           ] as const
         ).map(([k, label]) => (
           <button
@@ -70,7 +83,9 @@ export default function PositionForm({
         <span>
           {kind === "market"
             ? "Morpho market id (PT collateral)"
-            : "Pendle PT token address"}
+            : borrow
+              ? "Morpho market id you borrow from"
+              : "Pendle PT token address"}
         </span>
         <input
           value={address}
@@ -79,6 +94,42 @@ export default function PositionForm({
           placeholder="0x…"
         />
       </label>
+      {borrow && (
+        <>
+          <label className="fld">
+            <span>Borrowed money deployed into PT (empty = PT loop)</span>
+            <input
+              value={deploy}
+              onChange={(e) => setDeploy(e.target.value)}
+              spellCheck={false}
+              placeholder="0x… Pendle PT address"
+            />
+          </label>
+          <div className="row2">
+            <label className="fld">
+              <span>LTV (debt / collateral)</span>
+              <input
+                type="number"
+                value={ltv}
+                min={0.01}
+                max={0.99}
+                step={0.05}
+                disabled={!!account.trim()}
+                onChange={(e) => setLtv(Number(e.target.value))}
+              />
+            </label>
+            <label className="fld">
+              <span>Or read a live borrower</span>
+              <input
+                value={account}
+                onChange={(e) => setAccount(e.target.value)}
+                spellCheck={false}
+                placeholder="0x… wallet (optional)"
+              />
+            </label>
+          </div>
+        </>
+      )}
       <div className="row2">
         <label className="fld">
           <span>Chain</span>
@@ -106,7 +157,7 @@ export default function PositionForm({
       </div>
       <div className="row2">
         <label className="fld">
-          <span>Entered position size ($)</span>
+          <span>{borrow ? "Your capital / equity ($)" : "Entered position size ($)"}</span>
           <input
             type="number"
             value={size}
@@ -153,6 +204,7 @@ export default function PositionForm({
               size_usd: size,
               book_usd: book,
               horizon_days: horizon,
+              ...borrowFields(),
             },
             role,
           )
@@ -175,6 +227,9 @@ export default function PositionForm({
               setAddress(p.address);
               setChain(p.chain_id);
               setSize(p.size_usd);
+              setLtv(p.ltv ?? 0.4);
+              setDeploy(p.deploy_address ?? "");
+              setAccount(p.account ?? "");
               setRole("example");
               onAnalyze(
                 {
@@ -184,6 +239,9 @@ export default function PositionForm({
                   size_usd: p.size_usd,
                   book_usd: book,
                   horizon_days: horizon,
+                  ltv: p.ltv ?? null,
+                  deploy_address: p.deploy_address ?? null,
+                  account: p.account ?? null,
                 },
                 "example",
               );

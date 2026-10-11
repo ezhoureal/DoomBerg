@@ -1,14 +1,19 @@
 import sys
 import time
 
-from risk_engine import PositionRequest, RiskEngine
-from risk_engine.engine import PRESETS
+from risk_engine import RiskEngine
+from risk_engine.engine import PRESETS, request_from
 
 preset = next(p for p in PRESETS if p["id"] == (sys.argv[1] if len(sys.argv) > 1 else "pt-reusd-market"))
 eng = RiskEngine()
 t = time.time()
-a = eng.analyze(PositionRequest(preset["kind"], preset["address"], preset["chain_id"], preset["size_usd"]))
+a = eng.analyze(request_from(preset))
 print(f"analyse: {a['stats']} in {time.time() - t:.1f}s")
+if a.get("leverage"):
+    print("leverage:", {k: v for k, v in a["leverage"].items() if k != "live"})
+m = a["monitor"]
+print(f"monitor: {m['verdict']} EL {m['expected_loss_pct']:.3%} (liquidation {m['liquidation_loss_pct']:.3%}) "
+      f"yield {m['yield_pct']:.3%} exit {m['exit_cost_pct']:.3%}")
 s = a["screening"]
 print(f"total EL {s['total_expected_loss_pct']:.4%} / {s['horizon_days']}d, P(any loss event) {s['p_any_loss_event']:.2%}")
 for r in s["top"][:8]:

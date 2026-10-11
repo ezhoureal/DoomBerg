@@ -100,7 +100,12 @@ export default function InvestmentTabs({
               >
                 <span className="investment-tab-label">{label}</span>
                 <small>
-                  {item.analysis.request.kind === "market" ? "Lending" : "PT"} ·{" "}
+                  {item.analysis.request.kind === "market"
+                    ? "Lending"
+                    : item.analysis.request.kind === "borrow"
+                      ? "Borrow"
+                      : "PT"}{" "}
+                  ·{" "}
                   {CHAINS[item.analysis.request.chain_id]} ·{" "}
                   {usd(item.analysis.request.size_usd)}
                 </small>

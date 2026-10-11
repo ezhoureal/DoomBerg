@@ -1,6 +1,6 @@
 """Screen and record a watchlist: run it from cron (or with --every) for daily monitoring.
 
-    uv --directory backend run python scripts/monitor.py                     # once, the presets
+    uv --directory backend run python scripts/monitor.py                     # once, the saved watchlist (else the presets)
     uv --directory backend run python scripts/monitor.py --watchlist w.json  # once, your positions
     uv --directory backend run python scripts/monitor.py --every 3600        # hourly, until stopped
     uv --directory backend run python scripts/monitor.py --calibration       # how good were past forecasts?
@@ -38,14 +38,16 @@ if args.calibration:
     raise SystemExit
 
 engine = RiskEngine(history=history)
-watchlist = json.loads(Path(args.watchlist).read_text(encoding="utf-8")) if args.watchlist else PRESETS
 while True:
+    # Re-read each pass so positions added from the UI's Monitor panel are picked up.
+    watchlist = (json.loads(Path(args.watchlist).read_text(encoding="utf-8")) if args.watchlist
+                 else history.watchlist() or PRESETS)
     for r in engine.run_watchlist(watchlist, args.horizon):
         if not r["ok"]:
             print(f"FAILED  {r['label']}: {r['error']}")
             continue
-        print(f"{r['verdict']:4}  {r['label'][:55]:55}  EL {r['expected_loss_pct']:.2%}  exit {r['exit_cost_pct']:.2%}  "
-              f"alert {r['max_alert']:12}  {r['regime']}")
+        print(f"{r['verdict']:6}  {r['label'][:50]:50}  EL {r['expected_loss_pct']:.2%} - yield {r['yield_pct']:.2%}"
+              f" -> net {r['net_loss_pct']:.2%} vs exit {r['exit_cost_pct']:.2%}  alert {r['max_alert']:12}  {r['regime']}")
         for e in r["events"]:
             print(f"      [{e['severity']}] {e['message']}")
     if not args.every:

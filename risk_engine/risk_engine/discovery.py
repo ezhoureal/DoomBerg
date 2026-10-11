@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .graph import DependencyGraph, Edge, Evidence, Node
+from .leverage import balance_sheet, liquidation_incentive
 from .sources import morpho, pendle
 from .sources.pricing import protocol_tvl
 from .sources.rpc import Rpc
@@ -28,6 +29,9 @@ KNOWN_ADDRESSES = {  # underlying assets referenced by symbol in the registry
         "usde": "0x4c9edd5852cd905f086c759e8383e09bff1e68b3"},
 }
 MAX_ASSET_DEPTH = 4
+# Collateral venues of a PT: markets below this size cannot move its AMM; the largest few carry the liquidation volume.
+VENUE_MIN_USD = 250_000
+MAX_VENUES = 5
 
 # Legacy (ZeppelinOS) proxy slots used by USDC-style FiatToken proxies.
 ZOS_IMPL_SLOT = "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3"
@@ -37,12 +41,15 @@ MASTER_MINTER = "0x35d99f35"
 
 @dataclass
 class PositionRequest:
-    kind: str = "token"              # token (hold a PT) | market (supply to a Morpho market with PT collateral)
+    kind: str = "token"              # token (hold a PT) | market (supply to a Morpho market with PT collateral) | borrow
     address: str = ""                # PT token address or Morpho market id
     chain_id: int = 1
-    size_usd: float = 1_000_000.0
+    size_usd: float = 1_000_000.0    # for a borrow position: the equity (the client's capital)
     book_usd: float = 10_000_000.0
     label: str | None = None
+    ltv: float | None = None         # borrow: debt / collateral value
+    deploy_address: str | None = None  # borrow: PT the borrowed loan asset is deployed into (none = PT loop)
+    account: str | None = None       # borrow: read collateral and debt of this borrower from Morpho
 
 
 def short(a: str | None) -> str:
@@ -99,6 +106,8 @@ class Discovery:
             lid = self.add_asset(m["loanAsset"], r.chain_id, 1)
             self.link(pos.id, lid, "denominated_in", Evidence("morpho-api", "Supply is redeemed in the loan asset"))
             pos.label = r.label or f"${r.size_usd / 1e6:,.2f}M supplied to {self.g.nodes[mid].label}"
+        elif r.kind == "borrow":
+            self.add_borrow(pos, addr)
         else:
             raise ValueError(f"Unsupported position kind: {r.kind}")
 
@@ -142,11 +151,110 @@ class Discovery:
         self.link(pid, self.add_chain(chain_id), "settles_on", Evidence("registry", "Contracts deployed on this chain"))
         return pid
 
+    # ------------------------------------------------------------------ borrow
+    def add_borrow(self, pos: Node, market_id: str):
+        """Collateral posted in a Morpho market, a loan against it, and optionally the PT the loan is deployed into.
+
+        The position must reach a PT: either the collateral is one (a PT loop) or ``deploy_address`` names it.
+        With ``account`` the size and LTV are read from that borrower's live position.
+        """
+        r = self.req
+        m = morpho.market(market_id, r.chain_id)
+        if not m:
+            raise ValueError(f"No Morpho market {market_id} on chain {r.chain_id}")
+        mid = self.add_market(m, r.chain_id, role="borrow_market")
+        market = self.g.nodes[mid]
+        lltv = market.attrs["lltv"]
+        coll_id = next(e.target for e in self.g.out_edges(mid) if e.type == "collateral_in")
+        loan_id = next(e.target for e in self.g.out_edges(mid) if e.type == "lends")
+        coll, loan = self.g.nodes[coll_id], self.g.nodes[loan_id]
+        dep_id = None
+        if r.deploy_address and r.deploy_address.strip():
+            da = r.deploy_address.strip()
+            dep_id = self.add_asset(morpho.asset(da, r.chain_id) or {"address": da}, r.chain_id, 1)
+            if self.g.nodes[dep_id].attrs["kind"] != "pt":
+                raise ValueError(f"{self.g.nodes[dep_id].label} ({da}) is not a Pendle PT token; the loan must be deployed into a PT")
+        elif coll.attrs["kind"] != "pt":
+            raise ValueError(f"Collateral {coll.label} is not a Pendle PT: give the PT the borrowed {loan.label} is deployed into")
+        structure = "deploy" if dep_id else "loop"
+        if r.account and r.account.strip():
+            acct = r.account.strip()
+            live = morpho.market_position(acct, market_id, r.chain_id) or {}
+            st = live.get("state") or {}
+            cu, bu = st.get("collateralUsd") or 0.0, st.get("borrowAssetsUsd") or 0.0
+            if cu <= 0 or bu <= 0:
+                raise ValueError(f"{short(acct)} has no collateral and debt in market {short(market_id)}")
+            r.ltv = bu / cu
+            # Deploy: the loan sits in the PT, so the client's capital is the collateral. Loop: collateral minus debt.
+            r.size_usd = cu if dep_id else cu - bu
+            pos.attrs.update({"account": acct, "health_factor_live": live.get("healthFactor")})
+            pos.evidence.append(Evidence("morpho-api", f"Borrower {acct}: ${cu:,.0f} collateral, ${bu:,.0f} debt "
+                                                       f"(LTV {r.ltv:.1%}, health factor {live.get('healthFactor')})",
+                                         ref=f"marketPosition({acct}, {market_id})"))
+        if r.ltv is None or not 0 < r.ltv < 1:
+            raise ValueError("A borrow position needs an LTV between 0 and 1 (or a borrower account to read it from)")
+        if r.ltv >= lltv:
+            raise ValueError(f"LTV {r.ltv:.1%} is at or above the market's LLTV {lltv:.1%}: the position is already liquidatable")
+        E, ltv = r.size_usd, r.ltv
+        C, D, V = balance_sheet(structure, ltv)
+        pos.attrs.update({"size_usd": E, "equity_usd": E, "structure": structure, "ltv": ltv, "lltv": lltv,
+                          "lif": liquidation_incentive(lltv), "collateral_usd": C * E, "debt_usd": D * E, "deployed_usd": V * E})
+        self.link(pos.id, mid, "borrows_from", Evidence(
+            "user" if not r.account else "morpho-api",
+            f"${C * E:,.0f} of {coll.label} posted, ${D * E:,.0f} {loan.label} borrowed (LTV {ltv:.1%} vs LLTV {lltv:.1%})"))
+        if dep_id:
+            self.link(pos.id, dep_id, "deploys_into", Evidence("user", f"${V * E:,.0f} borrowed {loan.label} deployed into {self.g.nodes[dep_id].label}"))
+        pos.label = r.label or (f"${E / 1e6:,.2f}M {coll.label} -> borrow {loan.label} at {ltv:.0%} LTV -> {self.g.nodes[dep_id].label}"
+                                if dep_id else f"${E / 1e6:,.2f}M {coll.label} loop at {ltv:.0%} LTV ({C:.1f}x)")
+
     # ------------------------------------------------------------------ markets
-    def add_market(self, m: dict, chain_id: int) -> str:
+    def add_market(self, m: dict, chain_id: int, role: str = "position_market") -> str:
+        """The position's own market: lenders lose when its PT collateral loses value; borrowers get liquidated."""
         mid = f"market:{chain_id}:{m['marketId'].lower()}"
         if mid in self.g.nodes:
             return mid
+        st = m.get("state") or {}
+        coll, loan = m.get("collateralAsset") or {}, m["loanAsset"]
+        cid = self.add_asset(coll, chain_id, 1)
+        self._market_node(m, chain_id, role=role)
+        self.link(mid, cid, "collateral_in", Evidence("morpho-api", f"Collateral {coll.get('symbol')} (${st.get('collateralAssetsUsd') or 0:,.0f} posted)"))
+        lid = self.add_asset(loan, chain_id, 1)
+        self.link(mid, lid, "lends", Evidence("morpho-api", f"Loan asset {loan['symbol']}"))
+        return mid
+
+    def add_collateral_venues(self, pt_id: str, address: str, chain_id: int, amm_id: str):
+        """Other Morpho markets holding this PT as collateral: their liquidations can only be sold into its AMM."""
+        own = self.req.address.strip().lower() if self.req.kind in ("market", "borrow") else None
+        found = [m for m in morpho.markets_by_collateral(address, chain_id)
+                 if m.get("marketId", "").lower() != own
+                 and ((m.get("state") or {}).get("collateralAssetsUsd") or 0) >= VENUE_MIN_USD]
+        found.sort(key=lambda m: -(m["state"]["collateralAssetsUsd"]))
+        if not found:
+            return
+        pt, amm = self.g.nodes[pt_id], self.g.nodes[amm_id]
+        total = sum(m["state"]["collateralAssetsUsd"] for m in found)
+        liq = amm.attrs.get("liquidity_usd")
+        for m in found[:MAX_VENUES]:
+            st = m["state"]
+            vid = self._market_node(m, chain_id, role="collateral_venue")
+            self.link(pt_id, vid, "liquidated_in", Evidence(
+                "morpho-api", f"${st['collateralAssetsUsd']:,.0f} of {pt.label} posted against ${st.get('borrowAssetsUsd') or 0:,.0f} "
+                              f"borrowed; liquidations are sold into {amm.label}", ref=f"market {m['marketId']}"))
+        if len(found) > MAX_VENUES:
+            self.warnings.append(f"{pt.label}: {len(found) - MAX_VENUES} smaller collateral markets not modelled")
+        ratio = total / liq if liq else None
+        pt.attrs.update({"collateral_elsewhere_usd": total, "collateral_to_amm": ratio})
+        pt.evidence.append(Evidence("morpho-api", f"${total:,.0f} posted as collateral in {len(found)} other Morpho market(s)"
+                                                  + (f" vs ${liq:,.0f} AMM liquidity ({ratio:.1f}x)" if ratio else ""),
+                                    ref="markets(where: collateralAssetAddress_in)"))
+
+    def _market_node(self, m: dict, chain_id: int, role: str = "position_market") -> str:
+        """Market node with its protocol and oracle. ``collateral_in`` is linked by the caller, so a venue
+        reached from its PT does not point back at it (that would be a cycle)."""
+        mid = f"market:{chain_id}:{m['marketId'].lower()}"
+        if mid in self.g.nodes:
+            return mid
+        primary = role != "collateral_venue"
         st = m.get("state") or {}
         lltv = int(m["lltv"]) / 1e18
         coll, loan = m.get("collateralAsset") or {}, m["loanAsset"]
@@ -170,22 +278,22 @@ class Discovery:
             "realized_bad_debt_usd": (m.get("realizedBadDebt") or {}).get("usd"), "age_days": age_days,
             "oracle_price": oracle_px, "market_price": dex_px, "oracle_dex_gap": gap,
             "daily_price_variation": st.get("dailyPriceVariation"),
-            "subtitle": f"LLTV {lltv:.1%} - util {(st.get('utilization') or 0):.0%}",
+            "subtitle": (f"collateral venue - ${(st.get('collateralAssetsUsd') or 0) / 1e6:,.1f}M PT posted, LLTV {lltv:.1%}"
+                         if not primary else f"LLTV {lltv:.1%} - borrow APY {(st.get('borrowApy') or 0):.2%}" if role == "borrow_market"
+                         else f"LLTV {lltv:.1%} - util {(st.get('utilization') or 0):.0%}"),
             "url": f"https://app.morpho.org/market?id={m['marketId']}",
             "warnings": [w["type"] for w in m.get("warnings") or []],
+            "role": role,
         }, risk_factors={"utilization": st.get("utilization"), "age_days": age_days},
             evidence=[Evidence("morpho-api", f"Market {short(m['marketId'])}: supply ${st.get('supplyAssetsUsd') or 0:,.0f}, "
                                             f"borrow ${st.get('borrowAssetsUsd') or 0:,.0f}, LLTV {lltv:.1%}", ref=f"market {m['marketId']}")]))
         self.link(mid, self.add_protocol("morpho_blue", chain_id), "runs_on",
                   Evidence("morpho-api", f"Morpho Blue at {short((m.get('morphoBlue') or {}).get('address'))}"))
-        cid = self.add_asset(coll, chain_id, 1)
-        self.link(mid, cid, "collateral_in", Evidence("morpho-api", f"Collateral {coll.get('symbol')} (${st.get('collateralAssetsUsd') or 0:,.0f} posted)"))
-        lid = self.add_asset(loan, chain_id, 1)
-        self.link(mid, lid, "lends", Evidence("morpho-api", f"Loan asset {loan['symbol']}"))
         if m.get("oracle"):
-            oid = self.add_oracle(m["oracle"], chain_id, coll, st, age_days)
+            oid = self.add_oracle(m["oracle"], chain_id, coll, st, age_days, primary=primary)
             self.link(mid, oid, "priced_by", Evidence("morpho-api", f"Oracle {short(m['oracle']['address'])} ({m['oracle']['type']})"))
-            if gap is not None:
+            # A shared oracle shows the gap seen by the position's own market; a venue only fills it in when absent.
+            if gap is not None and (primary or self.g.nodes[oid].attrs.get("oracle_dex_gap") is None):
                 self.g.nodes[oid].attrs.update({"oracle_price": oracle_px, "market_price": dex_px, "oracle_dex_gap": gap})
                 self.g.nodes[oid].evidence.append(Evidence(
                     "morpho-api", f"Oracle price {oracle_px:,.6f} vs market price {dex_px:,.6f} {loan['symbol']} per "
@@ -195,8 +303,13 @@ class Discovery:
         return mid
 
     # ------------------------------------------------------------------ oracles
-    def add_oracle(self, o: dict, chain_id: int, coll: dict, mstate: dict, market_age_days: int | None) -> str:
+    def add_oracle(self, o: dict, chain_id: int, coll: dict, mstate: dict, market_age_days: int | None,
+                   primary: bool = True) -> str:
+        """``primary`` is the position's own market: its collateral size and age set the oracle's risk factors.
+        A collateral venue sharing an already classified oracle leaves it as it is."""
         oid = f"oracle:{chain_id}:{o['address'].lower()}"
+        if not primary and oid in self.g.nodes:
+            return oid
         data = o.get("data") or {}
         feeds = {k: (data.get(k) or {}).get("address") for k in ("baseFeedOne", "baseFeedTwo", "quoteFeedOne", "quoteFeedTwo")}
         base_vault = (data.get("baseOracleVault") or {}).get("address")
@@ -286,7 +399,8 @@ class Discovery:
             "decimals": a.get("decimals") or info.get("decimals"),
             "upgradeable": bool(info.get("proxy_implementation")),
             "explorer": explorer(chain_id, address), "subtitle": kind.replace("_", " "),
-        }, risk_factors={"offchain_backing": reg.get("offchain_backing", False), "unverified": not known})
+        }, risk_factors={"offchain_backing": reg.get("offchain_backing", False), "unverified": not known,
+                         **({"issuer_tier": reg["issuer_tier"]} if reg.get("issuer_tier") else {})})
         node.evidence.append(Evidence("registry" if reg else "heuristic",
                                       f"{symbol} classified as {kind}" + (f": {reg['backing']}" if reg.get("backing") else " from its symbol (unverified)"),
                                       ref=reg.get("source")))
@@ -331,6 +445,7 @@ class Discovery:
                                        ref=f"/v1/{chain_id}/markets/active")]))
                 self.link(aid, amm, "traded_on", Evidence("pendle-api", "PT is priced and exited through this AMM"))
                 self.link(amm, self.add_protocol("pendle_v2", chain_id), "runs_on", Evidence("pendle-api", "Pendle V2 AMM"))
+                self.add_collateral_venues(aid, address, chain_id, amm)
                 node.attrs["expiry"] = exp
                 node.attrs["subtitle"] = f"Pendle PT - matures {exp}"
                 if not node.attrs.get("price_usd") or not node.attrs.get("decimals"):
@@ -354,6 +469,7 @@ class Discovery:
                 ua = morpho.asset(under, chain_id) or {"address": under}
                 uid = self.add_asset(ua, chain_id, depth + 1)
                 self.link(aid, uid, "backed_by", Evidence("rpc", f"ERC-4626 asset() = {under}", ref=f"{address}.asset()", block=info.get("block")))
+                node.attrs["wraps"] = self.g.nodes[uid].label
         elif reg.get("underlying_symbol"):
             self.add_symbolic_underlying(aid, reg["underlying_symbol"], chain_id, depth, "Registry: wraps / stakes the underlying")
 
@@ -374,6 +490,7 @@ class Discovery:
         ua = (morpho.asset(addr, chain_id) if addr else None) or {"address": addr, "symbol": sym.upper() if len(sym) <= 5 else sym}
         uid = self.add_asset(ua, chain_id, depth + 1)
         self.link(aid, uid, "backed_by", Evidence("registry", why))
+        self.g.nodes[aid].attrs["wraps"] = self.g.nodes[uid].label
 
     def add_mint_authority(self, aid: str, address: str, info: dict, chain_id: int, reg: dict):
         rpc = self.rpc(chain_id)
@@ -426,4 +543,5 @@ class Discovery:
         order = {"position": 0, "market": 1, "oracle": 2, "asset": 2, "amm": 3, "feed": 3,
                  "issuer": 4, "mint_authority": 4, "bridge": 4, "protocol": 5, "chain": 6}
         for n in self.g.nodes.values():
-            n.layer = order.get(n.type, 3)
+            # A collateral venue sits beside the PT's AMM: both are where the PT gets sold.
+            n.layer = 3 if n.attrs.get("role") == "collateral_venue" else order.get(n.type, 3)

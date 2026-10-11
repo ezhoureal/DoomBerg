@@ -26,7 +26,8 @@ export function samePosition(
   return (
     a.kind === b.kind &&
     a.chain_id === b.chain_id &&
-    a.address.toLowerCase() === b.address.toLowerCase()
+    a.address.toLowerCase() === b.address.toLowerCase() &&
+    (a.deploy_address ?? "").toLowerCase() === (b.deploy_address ?? "").toLowerCase()
   );
 }
 export const REFRESH_AFTER_MS = 5 * 60_000;
@@ -90,9 +91,12 @@ export function relationLabel(type: string): string {
     issued_by: "Issued by",
     mintable_by: "Token controls",
     traded_on: "Traded on",
+    liquidated_in: "Collateral in",
     runs_on: "Runs on",
     settles_on: "Settles on",
     holds: "Holds",
+    borrows_from: "Borrows from",
+    deploys_into: "Deploys into",
     bridged_via: "Bridge",
   };
   return labels[type] || type.replace(/_/g, " ");

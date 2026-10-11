@@ -12,6 +12,7 @@ import {
   FileText,
   RefreshCw,
   LayoutList,
+  Activity,
 } from "lucide-react";
 import { api, ApiError } from "../api";
 import type { Analysis, Catalog, ShockResult } from "../types";
@@ -30,6 +31,7 @@ import {
 } from "../ui/workspace";
 import Freshness from "./Freshness";
 import ScenarioHistory from "./ScenarioHistory";
+import LeverageCard from "./LeverageCard";
 
 type View = "dependencies" | "scenarios" | "results";
 export default function InvestmentWorkspace({
@@ -48,6 +50,7 @@ export default function InvestmentWorkspace({
   onScenario,
   onInvalid,
   onOverview,
+  onMonitor,
   saveError,
   notice,
   onDismissNotice,
@@ -71,6 +74,7 @@ export default function InvestmentWorkspace({
   onScenario: (record: ScenarioRecord) => void;
   onInvalid: () => void;
   onOverview: () => void;
+  onMonitor: () => void;
   saveError: string | null;
   notice: string | null;
   onDismissNotice: () => void;
@@ -287,6 +291,10 @@ export default function InvestmentWorkspace({
             Investment overview
           </button>
         )}
+        <button className="nav-item overview-link" onClick={onMonitor}>
+          <Activity size={16} />
+          Scheduled monitoring
+        </button>
         {investmentTabs}
         <div className="nav-footer">
           <Shield size={15} />
@@ -379,10 +387,19 @@ export default function InvestmentWorkspace({
                 <span className="eyebrow">
                   {analysis.request.kind === "market"
                     ? "Morpho lending position"
-                    : "Pendle PT position"}{" "}
+                    : analysis.request.kind === "borrow"
+                      ? "Morpho borrow position"
+                      : "Pendle PT position"}{" "}
                   / {CHAINS[analysis.request.chain_id]}
                 </span>
-                <h1>{market?.label || pt?.label || "Investment analysis"}</h1>
+                <h1>
+                  {(analysis.request.kind === "borrow"
+                    ? analysis.graph.nodes.find((n) => n.id === analysis.graph.root)?.label
+                    : null) ||
+                    market?.label ||
+                    pt?.label ||
+                    "Investment analysis"}
+                </h1>
                 <span className="heading-meta">
                   {analysis.screening.horizon_days}-day horizon
                   {pt?.attrs.expiry ? ` · Matures ${pt.attrs.expiry}` : ""} ·
@@ -421,12 +438,21 @@ export default function InvestmentWorkspace({
             </div>
             <section className="summary-strip" aria-label="Investment summary">
               <div>
-                <small>Entered position size</small>
+                <small>
+                  {analysis.request.kind === "borrow" ? "Equity at risk" : "Entered position size"}
+                </small>
                 <b>{usd(analysis.request.size_usd)}</b>
               </div>
-              <div>
-                <small>Withdrawable at snapshot</small>
+              <div title={exitTitle(analysis)}>
+                <small>
+                  {analysis.request.kind === "market"
+                    ? "Withdrawable now"
+                    : analysis.request.kind === "borrow"
+                      ? "Unwindable now"
+                      : "Sellable now"}
+                </small>
                 <b>{pct(analysis.exit_now.instant_fraction, 0)}</b>
+                <small className="tile-note">{exitNote(analysis)}</small>
               </div>
               <div>
                 <small>Baseline modeled loss</small>
@@ -437,14 +463,20 @@ export default function InvestmentWorkspace({
                   )}
                 </b>
               </div>
-              <div>
+              <div title="Components are the protocols, tokens, oracles, markets and chains the position depends on (the position itself is not counted). Links are the relationships between them; there are more links than components because several components share a dependency, e.g. most of them run on the same chain.">
                 <small>Dependencies</small>
                 <b>
                   {analysis.stats.nodes - 1}
-                  <span> / {analysis.stats.edges} links</span>
+                  <span> components</span>
                 </b>
+                <small className="tile-note">
+                  {analysis.stats.edges} links · {analysis.stats.depth} layers deep
+                </small>
               </div>
             </section>
+            {analysis.leverage && (
+              <LeverageCard lev={analysis.leverage} horizon={analysis.screening.horizon_days} />
+            )}
             <details className="mobile-contributors">
               <summary>Modeled risk contributors</summary>
               <TopRisks
@@ -591,8 +623,8 @@ export default function InvestmentWorkspace({
                 ))}
                 <p>
                   Unavailable or inferred dependencies require verification.
-                  This workspace evaluates scenarios; it does not continuously
-                  monitor or execute trades.
+                  This workspace evaluates scenarios and never executes trades.
+                  Recurring STAY / EXIT checks run from Scheduled monitoring.
                 </p>
               </div>
             </details>
@@ -649,4 +681,24 @@ export default function InvestmentWorkspace({
       </dialog>
     </div>
   );
+}
+
+// The share of the position that can leave right now, in calm markets. A held
+// PT or a borrow unwind is all-or-nothing: 100% when a complete sale route was
+// confirmed (its slippage is the exit cost), 0% otherwise. A market supply is
+// capped by the market's idle liquidity.
+function exitNote(a: Analysis): string {
+  const e = a.exit_now;
+  if (a.request.kind === "market") {
+    const liq = e.liquidity_usd ?? 0;
+    return `${usd(liq)} idle (${(liq / a.request.size_usd).toFixed(1)}× size) · ${pct(e.instant_fraction_run ?? 0, 0)} in a lender run`;
+  }
+  return e.instant_fraction > 0
+    ? `Full sale route confirmed · ${pct(e.cost_pct, 2)} exit cost`
+    : "No confirmed sale route into USDC/USDT";
+}
+function exitTitle(a: Analysis): string {
+  return a.request.kind === "market"
+    ? "Share of the supplied amount that can be withdrawn immediately: the market's idle (unborrowed) liquidity divided by the position size, capped at 100%. It reaches 100% whenever idle liquidity exceeds the position. The 'lender run' figure is the expected share left if other lenders withdraw first during an incident."
+    : "Share of the position that can be exited immediately. For a held PT or a borrow unwind this is 100% when a complete sale route into USDC/USDT was confirmed (the price impact is charged as exit cost, not as a lower share) and 0% when no route was found.";
 }
