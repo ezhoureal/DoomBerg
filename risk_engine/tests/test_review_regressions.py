@@ -56,6 +56,29 @@ def test_pendle_exit_quotes_final_cash_proceeds_not_the_underlying(monkeypatch):
     assert q['impact'] == pytest.approx(1 - (720 - GAS_USD) / 1000)
 
 
+def test_held_pt_exit_takes_the_cheapest_executable_route(monkeypatch):
+    g = pt_with_route()
+    # The aggregator routes through thin pools; the PT's own Pendle market is deep.
+    monkeypatch.setattr('risk_engine.exit_cost.swap_quote', lambda *a, **kw: {
+        'price_impact': .91, 'amount_out_usd': 90, 'gas_usd': 0})
+    monkeypatch.setattr(pendle, 'swap_quote', lambda *a: {'amount_out': 999 * 10**6})
+    monkeypatch.setattr(pricing, 'price_usd', lambda *a: {'price': 1, 'decimals': 6})
+    q = quote_asset_sale(g, 'pt', 1000)
+    assert q['source'] == 'pendle-api' and q['impact'] == pytest.approx(1 - (999 - GAS_USD) / 1000)
+    assert 'kyberswap 91.00%' in q['detail']
+
+
+def test_wrapper_depeg_does_not_recount_its_underlying_class():
+    from risk_engine.failures import hazard_prior, severity_prior
+    plain = {'kind': 'yield_stable'}
+    wrapper = {'kind': 'yield_stable', 'wraps': 'USDe'}
+    k0, T0, _ = hazard_prior('depeg', 'asset', plain, {})
+    k1, T1, why = hazard_prior('depeg', 'asset', wrapper, {})
+    assert k1 / T1 < k0 / T0 and 'USDe depeg is modelled on its own node' in why[0]
+    assert severity_prior('depeg', 'asset', wrapper)[0] < severity_prior('depeg', 'asset', plain)[0]
+    assert hazard_prior('depeg', 'asset', {'kind': 'pt', 'wraps': 'USDe'}, {})[:2] == hazard_prior('depeg', 'asset', {'kind': 'pt'}, {})[:2]
+
+
 def test_unconfirmed_cash_route_does_not_credit_full_loss_avoidance(monkeypatch):
     g = pt_with_route()
     monkeypatch.setattr('risk_engine.exit_cost.swap_quote', lambda *a, **kw: None)

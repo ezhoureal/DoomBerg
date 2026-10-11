@@ -49,6 +49,28 @@ def market(market_id: str, chain_id: int) -> dict | None:
         return items[0] if items else None
 
 
+def markets_by_collateral(address: str, chain_id: int, first: int = 10) -> list[dict]:
+    """Morpho markets that accept ``address`` as collateral, largest supply first."""
+    try:
+        d = query(f"query($a:[String!],$c:[Int!]){{ markets(first:{int(first)}, orderBy: SupplyAssetsUsd, orderDirection: Desc, "
+                  f"where:{{ collateralAssetAddress_in:$a, chainId_in:$c }}) {{ items {{ {MARKET} }} }} }}",
+                  {"a": [address], "c": [chain_id]})
+    except MorphoError:
+        return []
+    return (d.get("markets") or {}).get("items") or []
+
+
+def market_position(user: str, market_id: str, chain_id: int) -> dict | None:
+    """A borrower's live position in one market: collateral and debt in USD, and Morpho's health factor."""
+    try:
+        d = query("query($u:String!,$k:String!,$c:Int!){ marketPosition(userAddress:$u, marketUniqueKey:$k, chainId:$c) "
+                  "{ healthFactor state { collateral collateralUsd borrowAssets borrowAssetsUsd } } }",
+                  {"u": user, "k": market_id, "c": chain_id}, ttl=60)
+        return d.get("marketPosition")
+    except MorphoError:
+        return None
+
+
 def asset(address: str, chain_id: int) -> dict | None:
     try:
         d = query(f"query($a:String!,$c:Int!){{ assetByAddress(address:$a, chainId:$c) {{ {ASSET} }} }}",

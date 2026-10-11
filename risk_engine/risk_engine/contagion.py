@@ -19,7 +19,7 @@ import math
 from typing import Protocol
 
 from .graph import DependencyGraph
-from .signals import LEVEL_RANK, Signal, node_class
+from .signals import LEVEL_RANK, Signal, alert_levels, node_class
 
 DAY = 86400.0
 TAU_DAYS = 30.0          # decay time: an event's effect halves in ~21 days
@@ -48,11 +48,16 @@ def gather_events(g: DependencyGraph, signals: list[Signal], now: float, history
         events += history.alert_episodes(since, now)
     # This run's alerts start an episode now, unless the history already has it running.
     running = {(e["node_id"], e["mode"]) for e in events if e["kind"] == "alert" and now - e.get("last", e["ts"]) <= 36 * 3600}
-    for s in signals:
-        if LEVEL_RANK[s.level] >= LEVEL_RANK["alert"] and (s.node_id, s.mode) not in running:
-            running.add((s.node_id, s.mode))
-            events.append({"ts": now, "node_id": s.node_id, "node_class": node_class(g.nodes[s.node_id]),
-                           "label": s.label, "mode": s.mode, "kind": "alert"})
+    for (_, mode), level in alert_levels(signals).items():
+        if LEVEL_RANK[level["level"]] < LEVEL_RANK["alert"]:
+            continue
+        for s in level["signals"]:
+            origin = s["origin_node_id"]
+            if (origin, mode) in running:
+                continue
+            running.add((origin, mode))
+            events.append({"ts": now, "node_id": origin, "node_class": node_class(g.nodes[origin]),
+                           "label": g.nodes[origin].label, "mode": mode, "kind": "alert"})
     return events
 
 
@@ -63,6 +68,11 @@ def multipliers(g: DependencyGraph, keys: list[tuple[str, str]], events: list[di
         cls = node_class(g.nodes[nid])
         parts = []
         for e in events:
+            # A feed warning displayed on its oracle is the same failure, not contagion.
+            if e["kind"] == "alert" and e["mode"] == mode and mode == "oracle_stale" and any(
+                edge.type == "reads_feed" and edge.target == e["node_id"] for edge in g.out_edges(nid)
+            ):
+                continue
             if e["node_id"] == nid:
                 rel = "same"
             elif e.get("node_class") == cls and e["mode"] == mode:

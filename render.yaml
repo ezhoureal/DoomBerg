@@ -1,0 +1,15 @@
+# Render blueprint: https://render.com/docs/blueprint-spec
+# New > Blueprint in the Render dashboard, pick this repo, and it builds the Dockerfile.
+services:
+  - type: web
+    name: doomberg
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Optional: set in the dashboard to enable the LLM narrative (otherwise a template is used).
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

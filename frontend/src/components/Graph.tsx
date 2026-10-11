@@ -11,15 +11,18 @@ import {
   applyNodeChanges,
   Background,
   BackgroundVariant,
+  BaseEdge,
   Controls,
   Handle,
   MarkerType,
   Position,
   ReactFlow,
+  useInternalNode,
   useReactFlow,
   useStore,
   ReactFlowProvider,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -38,9 +41,16 @@ import {
   type GroupKey,
   type ViewGraph,
 } from "../ui/graphView";
+import {
+  roundedPath,
+  routeEdges,
+  stepRoute,
+  type Point,
+  type Route,
+} from "../ui/edgeRoutes";
 export type ColorMode = "risk" | "type";
-const W = 260,
-  H = 104;
+const W = 280,
+  H = 112;
 type DepData = {
   n: GNode;
   colorMode: ColorMode;
@@ -72,7 +82,7 @@ const DepNode = memo(({ data }: NodeProps<Node<DepData>>) => {
       style={{ ["--accent" as any]: accent, opacity: dim ? 0.42 : 1 }}
     >
       <Handle type="target" position={Position.Left} className="h" />
-      <div className="dep-glyph" style={{ color: accent }}>
+      <div className="dep-glyph" style={{ color: accent }} aria-hidden>
         {n.type === "group" ? <Layers size={17} /> : meta.glyph}
       </div>
       <div className="dep-body">
@@ -116,25 +126,97 @@ const DepNode = memo(({ data }: NodeProps<Node<DepData>>) => {
   );
 });
 const nodeTypes = { dep: DepNode };
+type RouteData = { route: Route; from: Point; to: Point };
+// Draws the route computed with the layout. Once either card has been dragged
+// away from its laid-out position, falls back to a single turn between them.
+const RoutedEdge = memo(
+  ({
+    id,
+    source,
+    target,
+    data,
+    style,
+    markerEnd,
+    label,
+    labelStyle,
+    labelBgStyle,
+    labelBgPadding,
+    labelBgBorderRadius,
+  }: EdgeProps<Edge<RouteData>>) => {
+    const s = useInternalNode(source),
+      t = useInternalNode(target);
+    if (!data || !s || !t) return null;
+    const { route, from, to } = data;
+    const moved =
+      s.position.x !== from.x ||
+      s.position.y !== from.y ||
+      t.position.x !== to.x ||
+      t.position.y !== to.y;
+    const points = moved
+      ? stepRoute(
+          { x: s.position.x + W, y: s.position.y + H / 2 + route.sourcePort },
+          { x: t.position.x, y: t.position.y + H / 2 + route.targetPort },
+        )
+      : route.points;
+    const { d, mid } = roundedPath(points);
+    return (
+      <BaseEdge
+        id={id}
+        path={d}
+        style={style}
+        markerEnd={markerEnd}
+        label={label}
+        labelX={mid.x}
+        labelY={mid.y}
+        labelStyle={labelStyle}
+        labelBgStyle={labelBgStyle}
+        labelBgPadding={labelBgPadding}
+        labelBgBorderRadius={labelBgBorderRadius}
+        interactionWidth={14}
+      />
+    );
+  },
+);
+const edgeTypes = { routed: RoutedEdge };
 function layout(view: ViewGraph) {
-  const g = new dagre.graphlib.Graph();
+  const g = new dagre.graphlib.Graph({ multigraph: true });
   g.setGraph({
     rankdir: "LR",
-    ranksep: 60,
-    nodesep: 28,
-    marginx: 20,
-    marginy: 20,
+    // Wide gaps between layers leave room for a lane per edge turn and for the arrowheads.
+    ranksep: 130,
+    nodesep: 40,
+    edgesep: 24,
+    marginx: 24,
+    marginy: 24,
+    ranker: "network-simplex",
   });
   g.setDefaultEdgeLabel(() => ({}));
   view.nodes.forEach((n) => g.setNode(n.id, { width: W, height: H }));
-  view.edges.forEach((e) => g.setEdge(e.source, e.target));
+  view.edges.forEach((e) => g.setEdge(e.source, e.target, {}, e.id));
   dagre.layout(g);
-  return Object.fromEntries(
-    view.nodes.map((n) => {
-      const point = g.node(n.id);
-      return [n.id, { x: point.x - W / 2, y: point.y - H / 2 }];
-    }),
+  const centers: Record<string, Point> = {};
+  view.nodes.forEach((n) => {
+    const point = g.node(n.id);
+    centers[n.id] = { x: point.x, y: point.y };
+  });
+  const routes = routeEdges(
+    centers,
+    view.edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      points: g.edge({ v: e.source, w: e.target, name: e.id })?.points ?? [],
+    })),
+    W,
+    H,
   );
+  const positions = Object.fromEntries(
+    view.nodes.map((n) => [
+      n.id,
+      { x: centers[n.id].x - W / 2, y: centers[n.id].y - H / 2 },
+    ]),
+  );
+  return { positions, routes };
 }
 // View settings live in the workspace so they survive the graph unmounting while Results is open.
 export type GraphUi = {
@@ -231,7 +313,7 @@ function Inner({
   );
   // Re-layout only when the drawn graph changes, not on every selection.
   const structure = topologyKey(view);
-  const positions = useMemo(() => layout(view), [structure]);
+  const { positions, routes } = useMemo(() => layout(view), [structure]);
   // Highlight connections only when the selection is drawn; "Failure path"
   // can hide it, and dimming everything around nothing helps no one.
   const selectedId = selected ? shown(selected) : null;
@@ -323,31 +405,45 @@ function Inner({
     const hot = pathEdges.has(`${e.source}>${e.target}`);
     const connected =
       e.source === selectedVisible || e.target === selectedVisible;
-    const color = hot ? "#b45345" : connected ? "#4e645d" : "#8b8780";
+    const color = hot ? "#b4473a" : connected ? "#2f6b5e" : "#9a958c";
     return {
       id: e.id,
       source: e.source,
       target: e.target,
-      type: "smoothstep",
-      animated: hot,
+      type: "routed",
+      data: {
+        route: routes[e.id],
+        from: positions[e.source],
+        to: positions[e.target],
+      },
+      // Highlighted edges draw above the rest, so a crossing never hides them.
+      zIndex: hot ? 2 : connected ? 1 : 0,
+      className: hot ? "edge-hot" : connected ? "edge-connected" : undefined,
       label: hot || connected || labels ? relationLabel(e.type) : undefined,
       labelStyle: {
-        fill: hot ? "#9c342b" : "#4a4843",
-        fontSize: 11,
-        fontWeight: 500,
+        fill: hot ? "#9c342b" : connected ? "#245448" : "#4a4843",
+        fontSize: 12,
+        fontWeight: 600,
       },
-      labelBgStyle: { fill: "#fff", fillOpacity: 0.95 },
-      labelBgPadding: [4, 2],
+      labelBgStyle: {
+        fill: "#fff",
+        fillOpacity: 1,
+        stroke: hot ? "#e7b7ae" : "#e2ddd4",
+        strokeWidth: 1,
+      },
+      labelBgPadding: [6, 3],
+      labelBgBorderRadius: 4,
       style: {
         stroke: color,
-        strokeWidth: hot || connected ? 2.4 : 1.8,
-        opacity: selectedVisible && !connected && !hot ? 0.3 : 1,
+        strokeWidth: hot ? 2.8 : connected ? 2.4 : 1.6,
+        opacity: selectedVisible && !connected && !hot ? 0.25 : 1,
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        width: 20,
-        height: 20,
+        width: 16,
+        height: 16,
         markerUnits: "userSpaceOnUse",
+        strokeWidth: 1,
         color,
       },
     };
@@ -367,6 +463,8 @@ function Inner({
     fit();
   }, [analysis.position_id, fitRequest, active, width, height]);
   const set = (u: Partial<GraphUi>) => onUi({ ...ui, ...u });
+  // A different set of cards needs a new fit, once React Flow has measured them.
+  const refit = () => setTimeout(fit, 80);
   return (
     <>
       <div className="graph-tools">
@@ -374,14 +472,20 @@ function Inner({
           <button
             className={!all ? "on" : ""}
             aria-pressed={!all}
-            onClick={() => set({ all: false })}
+            onClick={() => {
+              set({ all: false });
+              refit();
+            }}
           >
             Simplified
           </button>
           <button
             className={all ? "on" : ""}
             aria-pressed={all}
-            onClick={() => set({ all: true, pathOnly: false })}
+            onClick={() => {
+              set({ all: true, pathOnly: false });
+              refit();
+            }}
           >
             All components
           </button>
@@ -390,7 +494,10 @@ function Inner({
           <button
             className={`tool-button ${pathOnly ? "on" : ""}`}
             aria-pressed={pathOnly}
-            onClick={() => set({ pathOnly: !pathOnly })}
+            onClick={() => {
+              set({ pathOnly: !pathOnly });
+              refit();
+            }}
           >
             Failure path
           </button>
@@ -428,6 +535,7 @@ function Inner({
           edges={edges}
           onNodesChange={onNodesChange}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onNodeClick={(_, n) => {
             const group = view.groups[n.id];
             if (group) set({ expanded: new Set([...expanded, group]) });
@@ -454,9 +562,9 @@ function Inner({
         >
           <Background
             variant={BackgroundVariant.Dots}
-            gap={24}
-            size={1}
-            color="#d8d4cd"
+            gap={22}
+            size={1.4}
+            color="#d9d4ca"
           />
           <Controls
             showInteractive={false}

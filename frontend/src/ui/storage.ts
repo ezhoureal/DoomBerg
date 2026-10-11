@@ -36,7 +36,7 @@ function validInvestment(item: Investment): boolean {
     !a ||
     typeof a.position_id !== "string" ||
     !a.request ||
-    !["market", "token"].includes(a.request.kind) ||
+    !["market", "token", "borrow"].includes(a.request.kind) ||
     typeof a.request.address !== "string" ||
     !Number.isFinite(a.request.size_usd) ||
     a.request.size_usd <= 0 ||
@@ -127,6 +127,50 @@ export function parseWorkspace(raw: string | null): SavedWorkspace {
       ? saved.closed.filter((id: unknown) => typeof id === "string")
       : [],
     skipped,
+  };
+}
+
+// Brings back investments and scenario runs that an earlier load left out but
+// that now validate (e.g. borrow positions, which older builds rejected).
+// Investments closed since then stay closed. `remaining` counts records the
+// backup still holds that cannot be restored.
+export function mergeBackup(
+  saved: SavedWorkspace,
+  backupRaw: string | null,
+): { saved: SavedWorkspace; recovered: number; remaining: number } {
+  let backup: SavedWorkspace;
+  try {
+    backup = parseWorkspace(backupRaw);
+  } catch {
+    return { saved, recovered: 0, remaining: 1 };
+  }
+  const closed = new Set(saved.closed);
+  const byId = new Map(saved.state.items.map((item) => [item.id, item]));
+  let recovered = 0;
+  const items = saved.state.items.map((item) => {
+    const old = backup.state.items.find((b) => b.id === item.id);
+    if (!old) return item;
+    const have = new Set(item.history.map((r) => r.id));
+    const extra = old.history.filter((r) => !have.has(r.id));
+    if (!extra.length) return item;
+    recovered += extra.length;
+    const history = [...item.history, ...extra]
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, HISTORY_LIMIT);
+    return { ...item, history };
+  });
+  for (const item of backup.state.items) {
+    if (byId.has(item.id) || closed.has(item.id)) continue;
+    items.push(item);
+    recovered++;
+  }
+  return {
+    saved: {
+      ...saved,
+      state: { items, activeId: saved.state.activeId ?? items[0]?.id ?? null },
+    },
+    recovered,
+    remaining: backup.skipped,
   };
 }
 

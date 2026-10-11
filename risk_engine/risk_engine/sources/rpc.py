@@ -9,7 +9,7 @@ import os
 import time
 from typing import Any
 
-from .http import _client, cached
+from .http import cached, send
 
 DEFAULT_RPCS = {
     1: "https://ethereum-rpc.publicnode.com",
@@ -59,7 +59,7 @@ class Rpc:
             for chunk_start in range(0, len(body), 40):
                 chunk = body[chunk_start:chunk_start + 40]
                 try:
-                    r = _client.post(self.url, json=chunk, timeout=20)
+                    r = send("POST", self.url, json=chunk, timeout=20)
                     res = r.json()
                 except Exception:
                     continue

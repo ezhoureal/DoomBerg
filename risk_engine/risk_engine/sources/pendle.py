@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .http import get_json
+from .http import SourceUnreachable, get_json
 
 BASE = "https://api-v2.pendle.finance/core"
 
@@ -16,6 +16,8 @@ def _strip(chain_prefixed: str | None) -> str | None:
 def active_markets(chain_id: int) -> list[dict]:
     try:
         d = get_json(f"{BASE}/v1/{chain_id}/markets/active", ttl=900)
+    except SourceUnreachable:
+        raise  # without the market list every address would look like "not a PT"
     except Exception:
         return []
     return d.get("markets", []) if isinstance(d, dict) else []

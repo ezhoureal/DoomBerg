@@ -9,8 +9,9 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ArrowRight, GitBranch, X } from "lucide-react";
-import type { ShockResult } from "../types";
+import { ArrowRight, GitBranch, Sparkles, X } from "lucide-react";
+import { api } from "../api";
+import type { Explanation, ShockResult } from "../types";
 import { TYPE_META, lossColor, pct, usd } from "../format";
 import { exitAmounts } from "../ui/workspace";
 
@@ -70,6 +71,22 @@ export default function Answer({
   canInspectPath?: boolean;
 }) {
   const [tab, setTab] = useState<ResultTab>("summary");
+  // Kept with the result it was written for, so switching saved scenarios drops it.
+  const [ai, setAi] = useState<{ for: ShockResult; summary: Explanation } | null>(null);
+  const [aiBusy, setAiBusy] = useState<ShockResult | null>(null);
+  const [aiError, setAiError] = useState<{ for: ShockResult; message: string } | null>(null);
+  const summary = ai?.for === r ? ai.summary : null;
+  const generateSummary = async () => {
+    setAiBusy(r);
+    setAiError(null);
+    try {
+      setAi({ for: r, summary: await api.explain(r) });
+    } catch (e) {
+      setAiError({ for: r, message: e instanceof Error ? e.message : "Summary request failed." });
+    } finally {
+      setAiBusy(null);
+    }
+  };
   const d = r.decision,
     exit = d.verdict === "EXIT";
   const hist = r.loss.histogram.map((b) => ({
@@ -233,17 +250,50 @@ export default function Answer({
                 <li key={i}>{x}</li>
               ))}
             </ul>
-            <details className="narrative">
-              <summary>Full explanation</summary>
-              <span className="muted small">
-                {r.explanation?.provider === "template"
-                  ? "Rule-based explanation"
-                  : `${r.explanation?.provider ?? ""} · ${r.explanation?.model ?? ""}`}
-              </span>
-              <div className="md">
-                <ReactMarkdown>{r.explanation?.text ?? ""}</ReactMarkdown>
-              </div>
-            </details>
+            <div className="ai-summary">
+              {summary ? (
+                <>
+                  <span className="muted small">
+                    {summary.provider === "template"
+                      ? "Rule-based summary"
+                      : `AI summary · ${summary.provider} · ${summary.model ?? ""}`}
+                  </span>
+                  {summary.provider === "template" && (
+                    <p className="execution-note">
+                      {summary.error
+                        ? `The LLM request failed (${summary.error}), so the rule-based summary is shown.`
+                        : "No LLM API key is configured on the backend, so the rule-based summary is shown."}
+                    </p>
+                  )}
+                  <div className="md">
+                    <ReactMarkdown>{summary.text}</ReactMarkdown>
+                  </div>
+                </>
+              ) : (
+                <button
+                  className="btn subtle"
+                  onClick={() => void generateSummary()}
+                  disabled={aiBusy === r}
+                  title="Asks the LLM to explain this result. Numbers and the verdict come from the model, not the LLM."
+                >
+                  <Sparkles size={14} />
+                  {aiBusy === r ? "Writing summary…" : "Generate AI summary"}
+                </button>
+              )}
+              {aiError?.for === r && (
+                <p className="execution-note" role="alert">
+                  {aiError.message}
+                </p>
+              )}
+            </div>
+            {r.explanation && (
+              <details className="narrative">
+                <summary>Rule-based explanation</summary>
+                <div className="md">
+                  <ReactMarkdown>{r.explanation.text}</ReactMarkdown>
+                </div>
+              </details>
+            )}
           </div>
         </div>
       )}

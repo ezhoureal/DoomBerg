@@ -1,7 +1,7 @@
 """Notifications: compare a screening with the previous one and say what changed.
 
 Raised when the verdict flips, when a component's failure probability crosses its break-even (its
-base rate plus the rise in probability that would pay for exiting), when an alert level rises, and when the expected loss
+cost divided by the loss and withdrawable share), when an alert level rises, and when the expected loss
 doubles. Events are stored in the run history and, when ``ALERT_WEBHOOK_URL`` is set, posted as
 ``{"text": ...}`` (the Slack / Mattermost incoming-webhook format).
 """
@@ -23,6 +23,12 @@ def _row_key(r: dict) -> str:
     return f"{r['node_id']}|{r['mode']}"
 
 
+def _net(run: dict) -> float:
+    """The quantity the verdict compares with the exit cost; runs recorded before the yield credit lack it."""
+    net = run.get("net_loss_pct")
+    return run["avoidable_loss_pct"] if net is None else net
+
+
 def diff(prev: dict | None, cur: dict, now: float) -> list[dict]:
     """Events between the previous run (``History.last_run``) and the current run dict."""
     base = {"ts": now, "position_key": cur["position_key"], "label": cur.get("label")}
@@ -34,18 +40,25 @@ def diff(prev: dict | None, cur: dict, now: float) -> list[dict]:
 
     if prev is None:
         if cur["verdict"] == "EXIT":
-            add("verdict", "critical", f"First screening says EXIT: live signals add {cur['avoidable_loss_pct']:.2%} avoidable "
-                                       f"expected loss > exit cost {cur['exit_cost_pct']:.2%}")
+            add("verdict", "critical", f"First screening says EXIT: avoidable expected loss net of yield {_net(cur):.2%} "
+                                       f"> exit cost {cur['exit_cost_pct']:.2%}")
     elif prev["verdict"] != cur["verdict"]:
-        add("verdict", "critical" if cur["verdict"] == "EXIT" else "info",
-            f"Verdict flipped {prev['verdict']} -> {cur['verdict']}: avoidable excess expected loss {cur['avoidable_loss_pct']:.2%} "
-            f"vs exit cost {cur['exit_cost_pct']:.2%} (was {prev['avoidable_loss_pct']:.2%} vs {prev['exit_cost_pct']:.2%})",
+        add("verdict", "critical" if cur["verdict"] == "EXIT" else "warning" if cur["verdict"] == "REVIEW" else "info",
+            f"Verdict flipped {prev['verdict']} -> {cur['verdict']}: avoidable expected loss net of yield {_net(cur):.2%} "
+            f"vs exit cost {cur['exit_cost_pct']:.2%} (was {_net(prev):.2%} vs {prev['exit_cost_pct']:.2%})",
             before=prev["verdict"], after=cur["verdict"])
+
+    missing = cur.get("summary", {}).get("data_issues", [])
+    prev_missing = (prev or {}).get("summary", {}).get("data_issues", [])
+    if missing != prev_missing:
+        add("data_quality", "warning" if missing else "info",
+            "Monitoring data incomplete: " + "; ".join(i["detail"] for i in missing) if missing else "Monitoring data restored",
+            issues=missing)
 
     for k, r in rows.items():
         p0 = prev_rows.get(k)
         name = f"{r['label']} / {r['mode_label']}"
-        if r["above"] and not (p0 and p0["above"]):
+        if not missing and r["above"] and not (p0 and p0["above"]):
             add("break_even", "warning", f"{name}: probability {r['p']:.2%} crossed break-even {r['break_even_p']:.2%}"
                 + (f" (was {p0['p']:.2%})" if p0 else ""), key=k, p=r["p"], break_even=r["break_even_p"])
         elif p0 and p0["above"] and not r["above"]:

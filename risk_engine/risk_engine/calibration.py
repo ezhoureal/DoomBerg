@@ -48,12 +48,27 @@ def matured(forecasts: list[dict], outcomes: list[dict], now: float) -> list[dic
 
 
 def report(forecasts: list[dict], outcomes: list[dict], now: float) -> dict:
-    rows = matured(forecasts, outcomes, now)
+    daily_rows = matured(forecasts, outcomes, now)
+    # A component's overlapping horizons share outcomes, even in different positions.
+    # Use disjoint windows per component/mode for scores and binomial intervals.
+    rows, last_end = [], {}
+    for r in daily_rows:
+        key = (r["node_id"], r["mode"])
+        if r["ts"] <= last_end.get(key, -math.inf):
+            continue
+        rows.append(r)
+        last_end[key] = r["ts"] + r["horizon_days"] * DAY
     n = len(rows)
     pending = sum(1 for f in forecasts if f["ts"] + f["horizon_days"] * DAY > now)
     if not n:
-        return {"n": 0, "pending": pending, "events": 0, "note": "No matured forecasts yet: a forecast matures after its horizon."}
+        return {"n": 0, "daily_forecasts": len(daily_rows), "pending": pending, "events": 0,
+                "positive_forecasts": 0, "note": "No matured forecasts yet: a forecast matures after its horizon."}
     k = sum(r["y"] for r in rows)
+    incidents = {(o["node_id"], o["mode"], o["ts"]) for o in outcomes if any(
+        r["node_id"] == o["node_id"] and r["mode"] == o["mode"] and
+        r["ts"] <= o["ts"] <= r["ts"] + r["horizon_days"] * DAY for r in rows
+    )}
+    event_count = len(incidents)
     eps = 1e-6
     brier = sum((r["p"] - r["y"]) ** 2 for r in rows) / n
     base = k / n
@@ -89,12 +104,14 @@ def report(forecasts: list[dict], outcomes: list[dict], now: float) -> dict:
         m[1] += r["y"]
         m[2] += r["p"]
     return {
-        "n": n, "events": k, "pending": pending, "brier": brier, "brier_climatology": brier_clim,
+        "n": n, "daily_forecasts": len(daily_rows), "events": event_count, "positive_forecasts": k,
+        "sampling": "nonoverlapping_component_windows", "pending": pending, "brier": brier, "brier_climatology": brier_clim,
         "brier_skill": 1 - brier / brier_clim if brier_clim > 0 else None, "log_loss": logloss,
         "mean_p": sum(r["p"] for r in rows) / n, "observed_rate": base,
         "reliability": reliability, "by_alert": by_alert,
         "by_mode": [{"mode": m, "n": v[0], "events": v[1], "mean_p": v[2] / v[0], "observed": v[1] / v[0]} for m, v in sorted(by_mode.items())],
-        "note": (f"Only {k} failures among matured forecasts: too few to judge calibration (want >= {MIN_EVENTS}). "
-                 "Forecasts of one position on nearby days overlap, so the effective sample is smaller than n.")
-                if k < MIN_EVENTS else "Forecasts of one position on nearby days overlap, so the effective sample is smaller than n.",
+        "note": (f"Only {event_count} distinct incidents: too few to judge calibration (want >= {MIN_EVENTS}). "
+                 if event_count < MIN_EVENTS else "") +
+                "Scores use non-overlapping windows per component/mode, shared positions are deduplicated. "
+                "Different components may still be correlated. Outcomes must be recorded comprehensively; absence of a record is treated as no failure.",
     }
