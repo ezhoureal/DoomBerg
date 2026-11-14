@@ -230,6 +230,22 @@ test("borrow investments are restored, and ones an older build dropped come back
   assert.equal(mergeBackup(main, "not json").remaining, 1);
 });
 
+test("cash-and-carry investments on an exchange (chain 0) are restored", () => {
+  const basis = {
+    ...analysis("server-c"),
+    request: {
+      ...analysis().request, kind: "cex_basis", address: "binance:BTC/USDT:USDT", chain_id: 0,
+      state_path: "/opt/basisd/data/trader-testnet",
+    },
+  };
+  const restored = parseWorkspace(
+    serializeWorkspace(reduce(opened(), { type: "open", id: "tab-c", analysis: basis })),
+  );
+  assert.equal(restored.skipped, 0);
+  assert.equal(restored.state.items[1].analysis.request.kind, "cex_basis");
+  assert.equal(restored.state.items[1].analysis.request.state_path, "/opt/basisd/data/trader-testnet");
+});
+
 test("changing a tab to a different position clears its scenario history", () => {
   let state = reduce(opened(), {
     type: "scenario",

@@ -77,7 +77,7 @@ class History:
                 if col not in cols:
                     c.execute(f"ALTER TABLE runs ADD COLUMN {col} REAL")
             cols = {r[1] for r in c.execute("PRAGMA table_info(watchlist)")}
-            for col, typ in (("ltv", "REAL"), ("deploy_address", "TEXT"), ("account", "TEXT")):
+            for col, typ in (("ltv", "REAL"), ("deploy_address", "TEXT"), ("account", "TEXT"), ("state_path", "TEXT")):
                 if col not in cols:
                     c.execute(f"ALTER TABLE watchlist ADD COLUMN {col} {typ}")
 
@@ -137,11 +137,12 @@ class History:
         """Add a position to the watchlist; re-adding the same position updates its label and book."""
         with self._conn() as c:
             c.execute("INSERT INTO watchlist (position_key, kind, address, chain_id, size_usd, book_usd, horizon_days, label, created_at, "
-                      "ltv, deploy_address, account) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                      "ltv, deploy_address, account, state_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
                       "ON CONFLICT(position_key) DO UPDATE SET label=excluded.label, book_usd=excluded.book_usd",
                       (position_key, item["kind"], item["address"].strip(), item["chain_id"], item["size_usd"], item["book_usd"],
                        item["horizon_days"], item.get("label"), time.time(), item.get("ltv"),
-                       (item.get("deploy_address") or "").strip() or None, (item.get("account") or "").strip() or None))
+                       (item.get("deploy_address") or "").strip() or None, (item.get("account") or "").strip() or None,
+                       (item.get("state_path") or "").strip() or None))
             return c.execute("SELECT id FROM watchlist WHERE position_key=?", (position_key,)).fetchone()[0]
 
     def remove_watch(self, watch_id: int) -> bool:

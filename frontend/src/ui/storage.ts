@@ -36,7 +36,7 @@ function validInvestment(item: Investment): boolean {
     !a ||
     typeof a.position_id !== "string" ||
     !a.request ||
-    !["market", "token", "borrow"].includes(a.request.kind) ||
+    !["market", "token", "borrow", "cex_basis"].includes(a.request.kind) ||
     typeof a.request.address !== "string" ||
     !Number.isFinite(a.request.size_usd) ||
     a.request.size_usd <= 0 ||
@@ -131,7 +131,7 @@ export function parseWorkspace(raw: string | null): SavedWorkspace {
 }
 
 // Brings back investments and scenario runs that an earlier load left out but
-// that now validate (e.g. borrow positions, which older builds rejected).
+// that now validate (e.g. borrow or cex_basis positions, which older builds rejected).
 // Investments closed since then stay closed. `remaining` counts records the
 // backup still holds that cannot be restored.
 export function mergeBackup(

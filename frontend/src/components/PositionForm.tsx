@@ -40,7 +40,9 @@ export default function PositionForm({
   const [ltv, setLtv] = useState(initial?.ltv ?? 0.4);
   const [deploy, setDeploy] = useState(initial?.deploy_address ?? "");
   const [account, setAccount] = useState(initial?.account ?? "");
+  const [statePath, setStatePath] = useState(initial?.state_path ?? "../basisd/data/trader-testnet");
   const borrow = kind === "borrow";
+  const cexBasis = kind === "cex_basis";
   const borrowFields = (): BorrowFields =>
     borrow
       ? {
@@ -48,7 +50,15 @@ export default function PositionForm({
           deploy_address: deploy.trim() || null,
           account: account.trim() || null,
         }
-      : {};
+      : cexBasis
+        ? { state_path: statePath.trim() || null }
+        : {};
+  const pickKind = (k: PositionKind) => {
+    setKind(k);
+    // A venue:symbol and a contract address are not interchangeable: reset the field when crossing over.
+    if (k === "cex_basis" && address.startsWith("0x")) setAddress("binance:BTC/USDT:USDT");
+    if (k !== "cex_basis" && !address.startsWith("0x")) setAddress("");
+  };
 
   useEffect(() => {
     api
@@ -68,12 +78,13 @@ export default function PositionForm({
             ["token", "PT token"],
             ["market", "Lending market"],
             ["borrow", "Borrow (leveraged)"],
+            ["cex_basis", "CEX basis (basisd)"],
           ] as const
         ).map(([k, label]) => (
           <button
             key={k}
             className={kind === k ? "on" : ""}
-            onClick={() => setKind(k)}
+            onClick={() => pickKind(k)}
           >
             {label}
           </button>
@@ -85,15 +96,28 @@ export default function PositionForm({
             ? "Morpho market id (PT collateral)"
             : borrow
               ? "Morpho market id you borrow from"
-              : "Pendle PT token address"}
+              : cexBasis
+                ? "Venue and perp, as basisd names them"
+                : "Pendle PT token address"}
         </span>
         <input
           value={address}
           onChange={(e) => setAddress(e.target.value)}
           spellCheck={false}
-          placeholder="0x…"
+          placeholder={cexBasis ? "binance:BTC/USDT:USDT" : "0x…"}
         />
       </label>
+      {cexBasis && (
+        <label className="fld">
+          <span>basisd state: positions.json or its folder, on the API's machine</span>
+          <input
+            value={statePath}
+            onChange={(e) => setStatePath(e.target.value)}
+            spellCheck={false}
+            placeholder="/opt/basisd/data/trader-testnet"
+          />
+        </label>
+      )}
       {borrow && (
         <>
           <label className="fld">
@@ -131,19 +155,23 @@ export default function PositionForm({
         </>
       )}
       <div className="row2">
-        <label className="fld">
-          <span>Chain</span>
-          <select
-            value={chain}
-            onChange={(e) => setChain(Number(e.target.value))}
-          >
-            {Object.entries(CHAINS).map(([id, n]) => (
-              <option key={id} value={id}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </label>
+        {!cexBasis && (
+          <label className="fld">
+            <span>Chain</span>
+            <select
+              value={chain}
+              onChange={(e) => setChain(Number(e.target.value))}
+            >
+              {Object.entries(CHAINS)
+                .filter(([id]) => id !== "0")
+                .map(([id, n]) => (
+                  <option key={id} value={id}>
+                    {n}
+                  </option>
+                ))}
+            </select>
+          </label>
+        )}
         <label className="fld">
           <span>Horizon (days)</span>
           <input
@@ -156,15 +184,17 @@ export default function PositionForm({
         </label>
       </div>
       <div className="row2">
-        <label className="fld">
-          <span>{borrow ? "Your capital / equity ($)" : "Entered position size ($)"}</span>
-          <input
-            type="number"
-            value={size}
-            step={100000}
-            onChange={(e) => setSize(Number(e.target.value))}
-          />
-        </label>
+        {!cexBasis && (
+          <label className="fld">
+            <span>{borrow ? "Your capital / equity ($)" : "Entered position size ($)"}</span>
+            <input
+              type="number"
+              value={size}
+              step={100000}
+              onChange={(e) => setSize(Number(e.target.value))}
+            />
+          </label>
+        )}
         <label className="fld">
           <span>Portfolio value ($)</span>
           <input
@@ -189,18 +219,19 @@ export default function PositionForm({
         </select>
       </label>
       <p className="form-intro">
-        Sizes are entered manually. Declared holdings are user-reported, not
-        wallet-verified.
+        {cexBasis
+          ? "Size, fills, leverage and liquidation price come from basisd's state; prices, funding and order books from the venue's mainnet API."
+          : "Sizes are entered manually. Declared holdings are user-reported, not wallet-verified."}
       </p>
       <button
         className="btn primary"
-        disabled={busy || !address}
+        disabled={busy || !address || (cexBasis && !statePath.trim())}
         onClick={() =>
           onAnalyze(
             {
               kind,
               address,
-              chain_id: chain,
+              chain_id: cexBasis ? 0 : chain,
               size_usd: size,
               book_usd: book,
               horizon_days: horizon,

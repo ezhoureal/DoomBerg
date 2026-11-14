@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from . import leverage
+from . import cex, leverage
 from .exit_cost import amm_impact
 from .failures import asset_vol, severity_prior
 from .graph import DependencyGraph
@@ -40,6 +40,12 @@ TRANSMISSION = {
     "deploys_into": "the borrowed money sits in this token; if it loses value, the debt still has to be repaid",
     "settles_on": "if the chain stops, nobody can liquidate, withdraw or sell",
     "lends": "loan asset of the market",
+    "holds_spot": "the position is long this spot; its price moves are hedged by the short",
+    "shorts": "the position is short this perp: it pays the funding carry and can be liquidated or auto-deleveraged",
+    "custodied_at": "the spot sits in the exchange's wallet: if the exchange fails, so does the claim",
+    "listed_on": "the exchange runs the perp's margin and liquidation engine and holds its margin",
+    "marked_by": "a mark price above the liquidation price closes the short, whatever the spot does",
+    "margined_in": "margin and P&L are in this stablecoin: a depeg costs the margin and the short alike",
 }
 
 
@@ -111,9 +117,17 @@ class Simulator:
                 if own and mode == "chain_halt":
                     frozen = np.maximum(frozen, sev)
 
-            elif t in ("protocol", "issuer", "bridge", "mint_authority"):
+            elif t in ("protocol", "issuer", "bridge", "mint_authority", "exchange"):
                 if own:
                     loss = sev
+
+            elif t == "perp":
+                if own:
+                    loss = sev  # a share of the notional: negative carry, or the move while ADL leaves the spot unhedged
+                for e in outs:
+                    if e.type in ("listed_on", "margined_in"):
+                        # Shown on the node for the explanation; the position reads each dependency once (cex.hedge_loss).
+                        loss = _combine(loss, get(L, e.target))
 
             elif t in ("feed", "oracle"):
                 if own and mode == "oracle_wrong_price":
@@ -146,7 +160,7 @@ class Simulator:
                 if own and mode in ("depeg", "unbacked_mint"):
                     loss = sev
                 for e in outs:
-                    if e.type in ("backed_by", "issued_by", "mintable_by", "bridged_via", "traded_on"):
+                    if e.type in ("backed_by", "issued_by", "mintable_by", "bridged_via", "traded_on", "custodied_at"):
                         loss = _combine(loss, get(L, e.target))
                 if any(e.type == "liquidated_in" for e in outs):
                     loss = _combine(loss, self._fire_sale(outs, loss, OE, ST, FZ, n))
@@ -160,6 +174,13 @@ class Simulator:
 
             elif t == "position" and node.attrs.get("kind") == "borrow":
                 loss = self._borrow(node, L, OE, ST, FZ, n)
+
+            elif t == "position" and node.attrs.get("kind") == "cex_basis":
+                p = cex.parts(g)
+                a = node.attrs
+                own_perp = sev if shock == p["perp"] else z  # the perp's own loss, without the exchange's (counted once below)
+                loss = cex.hedge_loss(a["n_frac"], a["m_frac"], a["rise_to_liquidation"], n, dv=get(L, p["exchange"]),
+                                      du=get(L, p["usdt"]), oerr=get(OE, p["mark"]), dperp=own_perp)
 
             elif t == "position":
                 for e in outs:

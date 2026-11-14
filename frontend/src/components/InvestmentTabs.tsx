@@ -104,7 +104,9 @@ export default function InvestmentTabs({
                     ? "Lending"
                     : item.analysis.request.kind === "borrow"
                       ? "Borrow"
-                      : "PT"}{" "}
+                      : item.analysis.request.kind === "cex_basis"
+                        ? "CEX basis"
+                        : "PT"}{" "}
                   ·{" "}
                   {CHAINS[item.analysis.request.chain_id]} ·{" "}
                   {usd(item.analysis.request.size_usd)}

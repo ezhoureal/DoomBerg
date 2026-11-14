@@ -31,6 +31,7 @@ import {
 } from "../ui/workspace";
 import Freshness from "./Freshness";
 import ScenarioHistory from "./ScenarioHistory";
+import HedgeCard from "./HedgeCard";
 import LeverageCard from "./LeverageCard";
 
 type View = "dependencies" | "scenarios" | "results";
@@ -389,11 +390,13 @@ export default function InvestmentWorkspace({
                     ? "Morpho lending position"
                     : analysis.request.kind === "borrow"
                       ? "Morpho borrow position"
-                      : "Pendle PT position"}{" "}
+                      : analysis.request.kind === "cex_basis"
+                        ? `Cash-and-carry on ${analysis.hedge?.venue ?? "an exchange"}`
+                        : "Pendle PT position"}{" "}
                   / {CHAINS[analysis.request.chain_id]}
                 </span>
                 <h1>
-                  {(analysis.request.kind === "borrow"
+                  {(analysis.request.kind === "borrow" || analysis.request.kind === "cex_basis"
                     ? analysis.graph.nodes.find((n) => n.id === analysis.graph.root)?.label
                     : null) ||
                     market?.label ||
@@ -407,7 +410,8 @@ export default function InvestmentWorkspace({
                 </span>
                 <div className="snapshot-meta">
                   <span className="position-role">
-                    {ROLE_LABELS[role]} · user-entered size
+                    {ROLE_LABELS[role]} ·{" "}
+                    {analysis.request.kind === "cex_basis" ? "size from basisd's state" : "user-entered size"}
                   </span>
                   <Freshness
                     refreshedAt={refreshedAt}
@@ -439,7 +443,11 @@ export default function InvestmentWorkspace({
             <section className="summary-strip" aria-label="Investment summary">
               <div>
                 <small>
-                  {analysis.request.kind === "borrow" ? "Equity at risk" : "Entered position size"}
+                  {analysis.request.kind === "borrow"
+                    ? "Equity at risk"
+                    : analysis.request.kind === "cex_basis"
+                      ? "Capital on the venue"
+                      : "Entered position size"}
                 </small>
                 <b>{usd(analysis.request.size_usd)}</b>
               </div>
@@ -447,7 +455,7 @@ export default function InvestmentWorkspace({
                 <small>
                   {analysis.request.kind === "market"
                     ? "Withdrawable now"
-                    : analysis.request.kind === "borrow"
+                    : analysis.request.kind === "borrow" || analysis.request.kind === "cex_basis"
                       ? "Unwindable now"
                       : "Sellable now"}
                 </small>
@@ -476,6 +484,9 @@ export default function InvestmentWorkspace({
             </section>
             {analysis.leverage && (
               <LeverageCard lev={analysis.leverage} horizon={analysis.screening.horizon_days} />
+            )}
+            {analysis.hedge && (
+              <HedgeCard hedge={analysis.hedge} horizon={analysis.screening.horizon_days} />
             )}
             <details className="mobile-contributors">
               <summary>Modeled risk contributors</summary>
@@ -693,6 +704,8 @@ function exitNote(a: Analysis): string {
     const liq = e.liquidity_usd ?? 0;
     return `${usd(liq)} idle (${(liq / a.request.size_usd).toFixed(1)}× size) · ${pct(e.instant_fraction_run ?? 0, 0)} in a lender run`;
   }
+  if (a.request.kind === "cex_basis")
+    return `Both legs on mainnet books, then withdrawn · ${pct(e.cost_pct, 2)} exit cost`;
   return e.instant_fraction > 0
     ? `Full sale route confirmed · ${pct(e.cost_pct, 2)} exit cost`
     : "No confirmed sale route into USDC/USDT";

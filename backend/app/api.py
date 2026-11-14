@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from risk_engine import PositionRequest, RiskEngine, calibration
 from risk_engine.engine import INCIDENTS, PRESETS, position_key, request_from
@@ -62,14 +62,23 @@ def watch_key(it: dict) -> str | None:
 
 
 class BorrowFields(BaseModel):
-    """Only for ``kind == "borrow"``: the LTV, the PT the loan is deployed into, or a borrower to read them from."""
+    """Only for ``kind == "borrow"``: the LTV, the PT the loan is deployed into, or a borrower to read them from.
+    Only for ``kind == "cex_basis"``: basisd's state file (``state_path``), or the basisd position inline (``cex``)."""
     ltv: float | None = Field(None, gt=0, lt=1)
     deploy_address: str | None = None
     account: str | None = None
+    state_path: str | None = None
+    cex: dict | None = None
+
+    @model_validator(mode="after")
+    def _cex_source(self):
+        if getattr(self, "kind", None) == "cex_basis" and not ((self.state_path or "").strip() or self.cex):
+            raise ValueError("A cex_basis position needs state_path (basisd's positions.json) or the position inline (cex)")
+        return self
 
 
 class AnalyzeBody(BorrowFields):
-    kind: Literal["token", "market", "borrow"] = "token"
+    kind: Literal["token", "market", "borrow", "cex_basis"] = "token"
     address: str
     chain_id: int = 1
     size_usd: float = Field(1_000_000, gt=0)
@@ -124,9 +133,9 @@ class MonitorRunBody(BaseModel):
 
 
 class WatchBody(BorrowFields):
-    kind: Literal["token", "market", "borrow"] = "token"
+    kind: Literal["token", "market", "borrow", "cex_basis"] = "token"
     address: str = Field(min_length=1)
-    chain_id: int = Field(1, gt=0)
+    chain_id: int = Field(1, ge=0)  # 0 for a position on a centralised exchange
     size_usd: float = Field(1_000_000, gt=0)
     book_usd: float = Field(10_000_000, gt=0)
     horizon_days: float = Field(30, gt=0, le=365)
@@ -168,8 +177,9 @@ def catalog():
 
 @app.post("/api/analyze")
 def analyze(body: AnalyzeBody):
-    req = PositionRequest(body.kind, body.address.strip(), body.chain_id, body.size_usd, body.book_usd, body.label,
-                          body.ltv, (body.deploy_address or "").strip() or None, (body.account or "").strip() or None)
+    req = PositionRequest(body.kind, body.address.strip(), 0 if body.kind == "cex_basis" else body.chain_id, body.size_usd,
+                          body.book_usd, body.label, body.ltv, (body.deploy_address or "").strip() or None,
+                          (body.account or "").strip() or None, (body.state_path or "").strip() or None, body.cex)
     try:
         return engine.analyze(req, body.horizon_days, record=body.record)
     except ValueError as e:
@@ -274,7 +284,7 @@ def monitor_watchlist():
         key = watch_key(it)
         run = history.last_run(key) if key else None
         out.append({**{k: it.get(k) for k in ("id", "kind", "address", "chain_id", "size_usd", "book_usd", "horizon_days", "label",
-                                              "ltv", "deploy_address", "account")},
+                                              "ltv", "deploy_address", "account", "state_path")},
                     "position_key": key, "latest": _brief(run), "error": _status["errors"].get(key)})
     return {"source": source, "items": out}
 
@@ -282,6 +292,12 @@ def monitor_watchlist():
 @app.post("/api/monitor/watchlist")
 def monitor_watch(body: WatchBody):
     item = body.model_dump()
+    if item["kind"] == "cex_basis":
+        if not (item.get("state_path") or "").strip():
+            raise HTTPException(422, "Watch a cex_basis position through basisd's state_path, so each run reads it fresh")
+        item["chain_id"] = 0
+    elif item["chain_id"] <= 0:
+        raise HTTPException(422, "chain_id must be positive")
     key = watch_key(item)
     return {"id": history.add_watch(item, key), "position_key": key}
 

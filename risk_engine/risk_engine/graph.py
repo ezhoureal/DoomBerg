@@ -16,6 +16,7 @@ import networkx as nx
 
 NODE_TYPES = (
     "position", "market", "oracle", "feed", "asset", "amm", "protocol", "issuer", "mint_authority", "bridge", "chain",
+    "exchange", "perp",  # cash-and-carry on a centralised exchange (``cex.py``)
 )
 
 EDGE_TYPES = (
@@ -34,6 +35,12 @@ EDGE_TYPES = (
     "liquidated_in",    # PT -> lending market where it is posted (liquidations are sold into its AMM)
     "runs_on",          # market / amm -> protocol code
     "settles_on",       # anything -> chain
+    "holds_spot",       # cex position -> spot leg
+    "shorts",           # cex position -> perp it is short
+    "custodied_at",     # spot leg -> exchange holding it
+    "listed_on",        # perp -> exchange running its matching and liquidation engine
+    "marked_by",        # perp -> mark price that decides liquidation
+    "margined_in",      # perp -> stablecoin it is margined and settled in
 )
 
 
