@@ -12,7 +12,8 @@ export const usd = (x: number | null | undefined) => {
 
 export const short = (a?: string | null) => (a && a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a ?? "");
 
-export const CHAINS: Record<number, string> = { 1: "Ethereum", 8453: "Base", 42161: "Arbitrum", 10: "Optimism", 137: "Polygon", 143: "Monad" };
+// 0: a position on a centralised exchange (``cex_basis``), not on a chain. The chain picker leaves it out.
+export const CHAINS: Record<number, string> = { 0: "Off-chain", 1: "Ethereum", 8453: "Base", 42161: "Arbitrum", 10: "Optimism", 137: "Polygon", 143: "Monad" };
 
 export const TYPE_META: Record<string, { color: string; label: string; glyph: string }> = {
   position: { color: "#75603b", label: "Position", glyph: "◆" },
@@ -26,6 +27,8 @@ export const TYPE_META: Record<string, { color: string; label: string; glyph: st
   bridge: { color: "#775893", label: "Bridge", glyph: "⇆" },
   protocol: { color: "#676e77", label: "Protocol code", glyph: "{}" },
   chain: { color: "#676e77", label: "Chain", glyph: "⛓" },
+  exchange: { color: "#426786", label: "Exchange / custodian", glyph: "▣" },
+  perp: { color: "#32766b", label: "Perpetual future", glyph: "∞" },
 };
 
 export const riskColor = (share: number) => {

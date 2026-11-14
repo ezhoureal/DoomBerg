@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import contagion, notify
+from . import cex, contagion, notify
 from .decision import decide
 from .discovery import Discovery, PositionRequest
 from .exit_cost import exit_cost
@@ -89,6 +89,10 @@ def position_key(req: PositionRequest, horizon_days: float) -> str:
     and for a borrow position at the same leverage and deploy target. A borrower read from chain is keyed by its
     account: its size and LTV move every day, and the key must be known before discovery reads them."""
     base = f"{req.kind}:{req.chain_id}:{req.address.strip().lower()}"
+    if req.kind == "cex_basis":
+        # basisd's state sets the size, which moves with the price and the fills. The position is the venue, the symbol
+        # and which trader holds it: basisd keeps paper and testnet apart (data/trader, data/trader-testnet).
+        return f"{base}:{cex.state_name(req.state_path) if req.state_path else 'inline'}:{horizon_days:g}d"
     if req.kind == "borrow":
         deploy = (req.deploy_address or "").strip().lower()
         if req.account and req.account.strip():
@@ -100,9 +104,12 @@ def position_key(req: PositionRequest, horizon_days: float) -> str:
 def request_from(it: dict) -> PositionRequest:
     """A ``PositionRequest`` from a preset or watchlist dict."""
     ltv = it.get("ltv")
-    return PositionRequest(it.get("kind", "token"), it["address"], int(it.get("chain_id", 1)),
-                           float(it.get("size_usd", 1_000_000)), float(it.get("book_usd") or 10_000_000), it.get("label"),
-                           float(ltv) if ltv is not None else None, it.get("deploy_address") or None, it.get("account") or None)
+    kind = it.get("kind", "token")
+    chain = it.get("chain_id")
+    return PositionRequest(kind, it["address"], int(chain if chain is not None else (0 if kind == "cex_basis" else 1)),
+                           float(it.get("size_usd") or 1_000_000), float(it.get("book_usd") or 10_000_000), it.get("label"),
+                           float(ltv) if ltv is not None else None, it.get("deploy_address") or None, it.get("account") or None,
+                           it.get("state_path") or None, it.get("cex") or None)
 
 
 class RiskEngine:
@@ -128,7 +135,8 @@ class RiskEngine:
         screening = self.screen(g, horizon_days, rng, levels, mults)
         calm_exit = exit_cost(g, req.size_usd, rng, stressed=False)
         lev = leverage_health(g, horizon_days)
-        monitor = self.monitor(g, req, horizon_days, screening, calm_exit, signals, levels, mults, record, now, lev)
+        hedge = cex.health(g, horizon_days)
+        monitor = self.monitor(g, req, horizon_days, screening, calm_exit, signals, levels, mults, record, now, lev or hedge)
         self.store[pid] = {"req": req, "graph": g, "screening": screening, "horizon": horizon_days, "levels": levels, "mults": mults}
         graph = g.to_dict()
         for n in graph["nodes"]:
@@ -143,6 +151,7 @@ class RiskEngine:
             "monitor": monitor,
             "exit_now": calm_exit,
             "leverage": lev,
+            "hedge": hedge,
             "stats": {"nodes": len(g.nodes), "edges": len(g.edges),
                       "evidence": sum(len(n.evidence) for n in g.nodes.values()) + sum(len(e.evidence) for e in g.edges.values()),
                       "depth": max((n.layer for n in g.nodes.values()), default=0),
@@ -207,7 +216,8 @@ class RiskEngine:
         credited, and the exited capital is assumed to earn nothing after that.
         Missing required readings suppress an actionable verdict and produce REVIEW.
         A borrow position also carries the expected penalty of being liquidated by an ordinary price move
-        (``leverage.health``). It is a base rate, so it adds to the baseline as well.
+        (``leverage.health``), and a cash-and-carry the same for its short (``cex.health``). It is a base rate, so it
+        adds to the baseline as well.
         """
         c, f = calm_exit["cost_pct"], min(max(calm_exit["instant_fraction"], 0.0), 1.0)
         yld = (calm_exit.get("apy") or 0.0) * max(horizon_days - calm_exit.get("redeploy_days", 0.0), 0.0) / 365
@@ -328,8 +338,10 @@ class RiskEngine:
             "impacted": impacted[:25],
             "node_losses": {k: float(v.mean()) for k, v in sim.loss.items()},
             "leverage": leverage_health(g, horizon),
+            "hedge": cex.health(g, horizon),
             "findings": self.findings(g, paths),
-            "assumptions": self.assumptions(mode, sev_mean, sev_kappa, horizon, n, ex, fixed_severity, req.kind == "borrow"),
+            "assumptions": self.assumptions(mode, sev_mean, sev_kappa, horizon, n, ex, fixed_severity, req.kind == "borrow",
+                                            req.kind == "cex_basis"),
         }
         result["explanation"] = explain(_clean(result), use_llm=use_llm)
         return _clean(result)
@@ -404,6 +416,15 @@ class RiskEngine:
                 elif n.type == "market":
                     out.append(f"Market {n.label}: utilization {(a.get('utilization') or 0):.0%}, LLTV {(a.get('lltv') or 0):.1%}, "
                                f"idle liquidity ${(a.get('liquidity_usd') or 0):,.0f}, age {a.get('age_days')} days")
+                if n.type == "perp":
+                    pa = g.nodes[g.root].attrs
+                    out.append(f"{n.label}: short {a['qty']:g} at {a['leverage']:g}x, mark {a['mark_price']:,.2f}; liquidation "
+                               f"{pa['rise_to_liquidation']:.0%} above it ({pa['liquidation_source']}); funding {a['funding_apr_7d']:+.2%} APR "
+                               f"over 7d, {a['funding_apr_now']:+.2%} predicted")
+                if n.type == "exchange":
+                    pa = g.nodes[g.root].attrs
+                    out.append(f"{n.label} holds both legs (${pa['capital_usd']:,.0f} on a {pa['environment']} account): "
+                               "closing the trade does not escape it until the proceeds are withdrawn")
                 if n.type == "amm":
                     out.append(f"{n.label}: liquidity ${(a.get('liquidity_usd') or 0):,.0f}, expiry {a.get('expiry')}")
                 if n.type == "mint_authority":
@@ -413,13 +434,20 @@ class RiskEngine:
         return out[:8]
 
     @staticmethod
-    def assumptions(mode, sev_mean, sev_kappa, horizon, n, ex, fixed, borrow: bool = False) -> list[str]:
+    def assumptions(mode, sev_mean, sev_kappa, horizon, n, ex, fixed, borrow: bool = False, cex_basis: bool = False) -> list[str]:
         a = [
             f"Horizon {horizon:g} days (Belem clients can redeem monthly)",
             f"{n:,} Monte Carlo draws",
             (f"Replay: severity fixed at the observed {fixed:g} (+/- noise)" if fixed is not None else
              f"Severity at the failing component: exponential, mean {sev_mean:g}h" if sev_kappa == 0 else
-             f"Severity at the failing component: Beta(mean {sev_mean:.0%}, concentration {sev_kappa:g})"),
+             f"Severity at the failing component: Beta(mean {sev_mean:.0%}, concentration {sev_kappa:g})" if sev_mean >= 0.01 else
+             f"Severity at the failing component: Beta(mean {sev_mean:.2%}, concentration {sev_kappa:g})"),
+        ]
+        if cex_basis:
+            return a + cex.ASSUMPTIONS + [
+                "Probabilities: Gamma-Poisson base rates x risk-factor and contagion multipliers, then Bayesian update by the alert likelihood ratio",
+            ] + ex.get("assumptions", [])
+        a += [
             "The PT loses whatever its underlying, issuer, mint controls or AMM lose (combined as independent losses)",
             "While the chain is halted a held PT cannot be sold; its price drifts with the volatility of its asset class",
             "Borrowers sit at 70-97% of LLTV on average; liquidators prevent 30-80% of insolvency only when the oracle sees the move",
@@ -445,9 +473,9 @@ class RiskEngine:
             try:
                 req = request_from(it)
                 h = float(it.get("horizon_days", horizon_days))
-                if req.kind not in ("market", "token", "borrow") or not isinstance(req.address, str) or not req.address.strip():
-                    raise ValueError("A token, market or borrow position with an address is required")
-                if req.chain_id <= 0 or any(not math.isfinite(v) or v <= 0 for v in (req.size_usd, req.book_usd, h)) or h > 365:
+                if req.kind not in ("market", "token", "borrow", "cex_basis") or not isinstance(req.address, str) or not req.address.strip():
+                    raise ValueError("A token, market, borrow or cex_basis position with an address is required")
+                if (req.chain_id <= 0 and req.kind != "cex_basis") or any(not math.isfinite(v) or v <= 0 for v in (req.size_usd, req.book_usd, h)) or h > 365:
                     raise ValueError("Positive finite size, book and chain, and horizon in (0,365] are required")
                 a = self.analyze(req, h, record=True)
                 m = a["monitor"]

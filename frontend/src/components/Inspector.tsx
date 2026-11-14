@@ -77,6 +77,20 @@ const SHOW_ATTRS: Record<string, [string, (v: any) => string][]> = {
   bridge: [
     ["canonical", (v) => (v ? "canonical (L1-secured)" : "third-party")],
   ],
+  exchange: [
+    ["tier", String],
+    ["environment", String],
+    ["note", String],
+  ],
+  perp: [
+    ["qty", String],
+    ["leverage", (v) => `${v}x`],
+    ["mark_price", (v) => (v ? `$${Number(v).toLocaleString()}` : "n/a")],
+    ["liquidation_price", (v) => (v ? `$${Number(v).toLocaleString()}` : "n/a")],
+    ["funding_apr_7d", pct],
+    ["funding_apr_now", pct],
+    ["funding_interval_h", (v) => `${v}h`],
+  ],
 };
 
 export default function Inspector({

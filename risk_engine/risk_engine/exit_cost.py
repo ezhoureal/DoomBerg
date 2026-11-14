@@ -5,6 +5,8 @@ Exit plan:
     (aggregator routing into a distinct USDC/USDT destination), widened by a stress multiplier because liquidity providers pull
     out during incidents. An unconfirmed route receives zero immediate loss-avoidance credit.
     Forgone fixed PT yield while the capital is redeployed.
+  - Cash-and-carry on an exchange (``cex.py``): sell the spot and buy back the short on the mainnet books, then
+    withdraw the proceeds off the venue.
   - Market supply: withdraw, limited by instant liquidity; during an incident other lenders race for
     the same liquidity (run share r ~ Beta). If the loan asset itself is damaged, what was withdrawn must
     also be sold. Forgone supply yield on the withdrawn part while it is redeployed.
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import cex
 from .graph import DependencyGraph
 from .leverage import health, parts
 from .sources import pendle
@@ -89,6 +92,8 @@ def exit_cost(g: DependencyGraph, size: float, rng: np.random.Generator, stresse
               sell_asset_id: str | None = None, redeploy_days: float = 7.0, n: int = 4000) -> dict:
     if g.nodes[g.root].attrs.get("kind") == "borrow":
         return _borrow_exit(g, size, rng, stressed, redeploy_days, n)
+    if g.nodes[g.root].attrs.get("kind") == "cex_basis":
+        return cex.exit_cost(g, size, rng, stressed, redeploy_days, n)
     target = next(g.nodes[e.target] for e in g.out_edges(g.root) if e.type in ("holds", "deposits_in"))
     steps, assumptions = [], []
     instant_frac = np.ones(n)

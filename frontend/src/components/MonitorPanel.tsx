@@ -238,7 +238,8 @@ export default function MonitorPanel({
     (i) =>
       i.address.toLowerCase() === current.request.address.toLowerCase() &&
       i.chain_id === current.request.chain_id &&
-      i.size_usd === current.request.size_usd &&
+      // A cash-and-carry's size comes from basisd's state and moves every run; the venue and symbol identify it.
+      (current.request.kind === "cex_basis" || i.size_usd === current.request.size_usd) &&
       (i.horizon_days ?? 30) === current.screening.horizon_days,
   );
   const saved = list?.source === "saved";
@@ -334,7 +335,7 @@ export default function MonitorPanel({
                           {item.label || short(item.address)}
                         </button>
                         <small>
-                          {item.kind === "market" ? "Morpho market" : item.kind === "borrow" ? "Morpho borrow" : "Held PT"} · {CHAINS[item.chain_id] ?? item.chain_id} ·{" "}
+                          {item.kind === "market" ? "Morpho market" : item.kind === "borrow" ? "Morpho borrow" : item.kind === "cex_basis" ? "CEX basis" : "Held PT"} · {CHAINS[item.chain_id] ?? item.chain_id} ·{" "}
                           {usd(item.size_usd)} · {item.horizon_days ?? 30}-day horizon
                         </small>
                       </td>

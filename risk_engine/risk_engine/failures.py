@@ -41,6 +41,13 @@ MODES: dict[str, FailureMode] = {m.id: m for m in [
                 "Blocks stop; nobody can liquidate, repay, withdraw or sell.", 50),
     FailureMode("liquidity_drain", "Liquidity drains (bank run)", ("market", "amm"),
                 "Everyone withdraws at once; what is left is slow or costly to exit.", 10),
+    # Cash-and-carry on a centralised exchange (``cex.py``).
+    FailureMode("venue_failure", "Exchange fails or freezes withdrawals", ("exchange",),
+                "The exchange holding both legs becomes insolvent or stops withdrawals (Mt. Gox, FTX).", 15),
+    FailureMode("funding_flip", "Funding turns negative", ("perp",),
+                "Longs stop paying shorts: the carry reverses until the trader's exit rule closes the position.", 4),
+    FailureMode("auto_deleverage", "Short closed by auto-deleveraging (ADL)", ("perp",),
+                "The insurance fund runs short in a crash and the venue closes profitable shorts, leaving the spot unhedged.", 10),
 ]}
 
 # Asset classes used for depeg priors. (k, T) -> annual hazard, (mean, kappa) -> severity Beta.
@@ -72,6 +79,15 @@ BASE: dict[str, dict] = {
     "exploit":               {"k": 40, "T": 1000, "sev": (0.45, 2.5)},
     "chain_halt":            {"k": 2, "T": 40, "sev": (4.0, 0)},          # hours halted (exponential mean)
     "liquidity_drain":       {"k": 5, "T": 100, "sev": (0.08, 6)},
+    # Large-exchange failures: Mt. Gox 2014, QuadrigaCX 2019, Thodex 2021, FTX 2022 over ~150 exchange-years (judgement).
+    # Severity is a share of the claim lost, counting years of frozen funds; FTX began repaying customers only in 2025, at November-2022 prices.
+    "venue_failure":         {"k": 4, "T": 150, "sev": (0.40, 3)},
+    # Binance BTCUSDT 2019-09..2026-10, basisd's rule (enter at 7d APR >= 5%, exit below 0%): 23 exits on a flip in
+    # 5.74 years in position. Cost per flip, as a share of notional: negative funding paid in the week before the exit
+    # (mean 0.10%, p90 0.16%) plus the exit's two taker legs (~0.12%).
+    "funding_flip":          {"k": 23, "T": 5.74, "sev": (0.0022, 2000)},
+    # A profitable short ADL'd on a major perp: rare (judgement); the spot then stays unhedged until someone re-hedges.
+    "auto_deleverage":       {"k": 1, "T": 10, "sev": (0.03, 8)},
 }
 
 CHAIN_HALT = {  # (k, T, mean hours)
@@ -89,12 +105,17 @@ def applicable_modes(node_type: str, node_attrs: dict | None = None) -> list[Fai
         # through its oracle (wrong or stale price) and the liquidations it triggers. A borrower is hit
         # the same way: through the collateral, the oracle, the loan asset and Morpho Blue, not a lender run.
         return []
+    if node_type == "asset" and attrs.get("role") == "hedged_spot":
+        # The spot leg's price moves are hedged; what it can lose is the custody (the exchange node).
+        return []
     out = []
     for m in MODES.values():
         if node_type not in m.applies_to:
             continue
         if m.id == "unbacked_mint" and node_type == "asset" and attrs.get("kind") in ("pt",):
             continue
+        if m.id == "oracle_stale" and attrs.get("role") == "mark_price":
+            continue  # a frozen mark only delays liquidation of a hedged short; it does not cost it
         out.append(m)
     return out
 
@@ -153,6 +174,8 @@ def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[floa
             m(2.0, "thinly traded collateral is cheaper to manipulate")
         if _below(rf.get("age_days"), 180):
             m(1.5, "market younger than 6 months")
+        if rf.get("composite_index"):
+            m(0.5, "mark price is a median over several spot venues and the perp's own book")
     elif mode == "depeg":
         if rf.get("offchain_backing"):
             m(1.3, "backing held off-chain, not verifiable on-chain")
@@ -197,6 +220,13 @@ def hazard_prior(mode: str, node_type: str, attrs: dict, rf: dict) -> tuple[floa
             m(2.0, "deployed less than a year ago")
         if (rf.get("tvl_usd") or 0) > 1e9:
             m(0.7, "survived with > $1B TVL (Lindy)")
+    elif mode == "venue_failure":
+        if rf.get("exchange_tier") == "top":
+            m(0.5, "largest exchange by volume, with proof of reserves and a user protection fund (SAFU)")
+    elif mode == "auto_deleverage":
+        lev = rf.get("leverage") or 1.0
+        if lev <= 2:
+            m(0.3, f"{lev:g}x leverage ranks near the end of the ADL queue (ranked by profit x leverage)")
     elif mode == "liquidity_drain":
         u = rf.get("utilization") or 0
         if u > 0.85:
@@ -213,6 +243,8 @@ def severity_prior(mode: str, node_type: str, attrs: dict) -> tuple[float, float
         return DEPEG_PRIORS.get(depeg_class(attrs), DEPEG_PRIORS["unknown"])["sev"]
     if mode == "chain_halt":
         return (CHAIN_HALT.get(attrs.get("chain_class", "l1"), CHAIN_HALT["l1"])[2], 0)
+    if mode == "oracle_wrong_price" and attrs.get("role") == "mark_price":
+        return (0.08, 4)  # a wick of a composite mark: far smaller than a manipulated single-source DeFi oracle
     if mode == "exploit" and attrs.get("immutable_core"):
         return (0.30, 2.5)
     if mode == "unbacked_mint" and attrs.get("issuer_tier") == "regulated":

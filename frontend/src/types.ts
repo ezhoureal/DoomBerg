@@ -70,6 +70,7 @@ export type Analysis = {
   monitor: Monitor;
   exit_now: ExitInfo;
   leverage?: Leverage | null;
+  hedge?: Hedge | null;
   stats: { nodes: number; edges: number; evidence: number; depth: number; discovery_seconds: number; warnings: string[] };
 };
 
@@ -117,7 +118,7 @@ export const netLoss = (r: { avoidable_loss_pct: number; net_loss_pct: number | 
 export type WatchItem = {
   id: number | null; kind: PositionKind; address: string; chain_id: number; size_usd: number; book_usd: number | null;
   horizon_days: number | null; label: string | null; position_key: string | null; error: string | null;
-  ltv?: number | null; deploy_address?: string | null; account?: string | null;
+  ltv?: number | null; deploy_address?: string | null; account?: string | null; state_path?: string | null;
   latest: (MonitorRun & {
     model_verdict: "STAY" | "EXIT" | null;
     data_issues: { node_id: string; label: string; fields: string[]; detail: string }[];
@@ -135,10 +136,26 @@ export type Schedule = {
 
 export type Summary = { mean: number; p05: number; p50: number; p95: number; p99: number; prob_any_loss: number };
 
-export type PositionKind = "token" | "market" | "borrow";
+export type PositionKind = "token" | "market" | "borrow" | "cex_basis";
 
-/** Only for a borrow position: the LTV and the PT the loan is deployed into (none = PT loop), or a borrower to read them from. */
-export type BorrowFields = { ltv?: number | null; deploy_address?: string | null; account?: string | null };
+/** Only for a borrow position: the LTV and the PT the loan is deployed into (none = PT loop), or a borrower to read them from.
+ * Only for cex_basis: basisd's state file (or the basisd position inline). */
+export type BorrowFields = {
+  ltv?: number | null; deploy_address?: string | null; account?: string | null;
+  state_path?: string | null; cex?: Record<string, unknown> | null;
+};
+
+/** Mirrors ``cex.health`` in the engine: a cash-and-carry (long spot, short perp) on one exchange. */
+export type Hedge = {
+  structure: "cash_and_carry"; venue: string; environment: string; base: string; symbol: string;
+  spot_qty: number; perp_qty: number; hedge_drift: number | null; unhedged_usd: number;
+  capital_usd: number; notional_usd: number; margin_usd: number; leverage: number;
+  mark_price: number; liquidation_price: number; liquidation_source: string; rise_to_liquidation: number; margin_ratio: number | null;
+  vol: number; p_liquidation: number; penalty_if_liquidated_pct: number; expected_penalty_pct: number;
+  funding_apr_7d: number; funding_apr_now: number; trader_apr: number | null; exit_apr: number; carry_apy: number;
+  funding_received_usd: number; fees_paid_usd: number; settlements: number; opened_ms: number | null;
+  basis_entry: number; basis_now: number; state_file: string | null; state_age_s: number | null;
+};
 
 /** Mirrors ``leverage.health`` in the engine. */
 export type Leverage = {

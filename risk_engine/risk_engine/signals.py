@@ -39,6 +39,9 @@ RULES: dict[str, dict] = {
     "supply_outflow":     {"family": "liquidity", "watch": 0.10, "alert": 0.25, "label": "Market supply withdrawn over 24h"},
     "amm_outflow":        {"family": "liquidity", "watch": 0.20, "alert": 0.40, "label": "AMM liquidity withdrawn over 24h"},
     "bad_debt":           {"family": "solvency", "watch": 0.001, "alert": 0.01, "label": "Unrealized bad debt (share of supply)"},
+    # Cash-and-carry: values are the negative of the funding APR, so a positive value means shorts pay.
+    "funding_negative":   {"family": "funding", "watch": 0.0001, "alert": 0.02, "label": "Trailing 7d funding below zero (shorts pay)"},
+    "funding_now_negative": {"family": "funding", "watch": 0.02, "alert": 0.10, "label": "Predicted funding below zero (shorts pay)"},
 }
 
 # A 24h price drop is news for a stable or yield token, but ordinary volatility for ETH or BTC.
@@ -92,6 +95,10 @@ def data_issues(g: DependencyGraph) -> list[dict]:
             checks["utilization"] = checks["utilization"] and a["utilization"] <= 1
         elif node.type == "amm":
             checks = {"liquidity_usd": valid(a.get("liquidity_usd"))}
+        elif node.type == "perp":
+            finite = lambda v: isinstance(v, (int, float)) and math.isfinite(v)  # noqa: E731 - funding can be negative
+            checks = {"mark_price": valid(a.get("mark_price"), True), "funding_apr_7d": finite(a.get("funding_apr_7d"))
+                      and (a.get("settlements_7d") or 0) > 0}
         missing = [k for k, ok in checks.items() if not ok]
         if missing:
             issues.append({"node_id": node.id, "label": node.label, "fields": missing,
@@ -120,7 +127,8 @@ def observe(g: DependencyGraph) -> list[tuple[str, str, float]]:
     """Metrics worth storing each run, so the next run can compute 24h changes."""
     out = []
     keep = {"market": ("supply_usd", "liquidity_usd", "utilization", "oracle_dex_gap"),
-            "amm": ("liquidity_usd", "implied_apy"), "asset": ("price_usd",)}
+            "amm": ("liquidity_usd", "implied_apy"), "asset": ("price_usd",),
+            "perp": ("funding_apr_7d", "funding_apr_now", "mark_price"), "oracle": ("oracle_dex_gap",)}
     for n in g.nodes.values():
         for k in keep.get(n.type, ()):
             v = n.attrs.get(k)
@@ -165,6 +173,16 @@ def detect(g: DependencyGraph, now: float, history: MetricHistory | None = None)
             for e in g.in_edges(n.id):
                 if e.type == "reads_feed":
                     fire(g.nodes[e.source], "oracle_stale", "feed_stale", 1.0, detail, origin=n.id)
+        elif n.type == "perp":
+            apr7, now_apr = a.get("funding_apr_7d"), a.get("funding_apr_now")
+            if apr7 is not None:
+                fire(n, "funding_flip", "funding_negative", -apr7,
+                     f"{n.label} funding {apr7:+.2%} APR over 7d ({a.get('settlements_7d')} settlements); basisd exits below "
+                     f"{a.get('exit_apr', 0.0):.0%}")
+            if now_apr is not None:
+                fire(n, "funding_flip", "funding_now_negative", -now_apr,
+                     f"{n.label} predicted funding {a.get('funding_rate_now', 0):+.4%} per {a.get('funding_interval_h', 8):g}h "
+                     f"({now_apr:+.2%} APR)")
         elif n.type == "oracle":
             gap = a.get("oracle_dex_gap")
             if gap is not None:

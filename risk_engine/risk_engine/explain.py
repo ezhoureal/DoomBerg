@@ -64,6 +64,9 @@ def build_context(result: dict) -> dict:
         "leverage": {k: result["leverage"][k] for k in ("structure", "leverage", "ltv", "lltv", "health_factor", "drop_to_liquidation",
                                                          "p_liquidation", "liquidation_incentive", "net_apy")}
                     if result.get("leverage") else None,
+        "hedge": {k: result["hedge"][k] for k in ("venue", "environment", "base", "leverage", "rise_to_liquidation", "p_liquidation",
+                                                   "funding_apr_7d", "funding_apr_now", "carry_apy", "hedge_drift")}
+                 if result.get("hedge") else None,
     }
 
 
@@ -141,6 +144,13 @@ def template(ctx: dict) -> str:
             f"(health factor {lev['health_factor']:.2f}). A {_pct(lev['drop_to_liquidation'])} drop in the oracle price triggers "
             f"liquidation with a {_pct(lev['liquidation_incentive'] - 1)} penalty; chance from ordinary price moves over the horizon "
             f"{_pct(lev['p_liquidation'])}. Net carry on equity {_pct(lev['net_apy'])} a year.")
+    hedge = ctx.get("hedge")
+    if hedge:
+        lines.append(
+            f"Cash-and-carry on {hedge['venue']} ({hedge['environment']}): long {hedge['base']} spot, short the perp at "
+            f"{hedge['leverage']:g}x. A {_pct(hedge['rise_to_liquidation'])} rise of the mark price liquidates the short; chance from "
+            f"ordinary moves over the horizon {_pct(hedge['p_liquidation'])}. Funding {_pct(hedge['funding_apr_7d'])} APR over 7 days, "
+            f"{_pct(hedge['carry_apy'])} a year on the capital.")
     lines += [
         "",
         "#### What would change the call",

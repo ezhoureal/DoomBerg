@@ -14,10 +14,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import cex
 from .graph import DependencyGraph, Edge, Evidence, Node
 from .leverage import balance_sheet, liquidation_incentive
 from .sources import morpho, pendle
-from .sources.pricing import protocol_tvl
+from .sources.pricing import USDT, protocol_tvl
 from .sources.rpc import Rpc
 
 DATA = Path(__file__).parent / "data"
@@ -41,8 +42,8 @@ MASTER_MINTER = "0x35d99f35"
 
 @dataclass
 class PositionRequest:
-    kind: str = "token"              # token (hold a PT) | market (supply to a Morpho market with PT collateral) | borrow
-    address: str = ""                # PT token address or Morpho market id
+    kind: str = "token"              # token (hold a PT) | market (supply to a Morpho market with PT collateral) | borrow | cex_basis
+    address: str = ""                # PT token address, Morpho market id, or for cex_basis ``venue:perp`` (binance:BTC/USDT:USDT)
     chain_id: int = 1
     size_usd: float = 1_000_000.0    # for a borrow position: the equity (the client's capital)
     book_usd: float = 10_000_000.0
@@ -50,6 +51,8 @@ class PositionRequest:
     ltv: float | None = None         # borrow: debt / collateral value
     deploy_address: str | None = None  # borrow: PT the borrowed loan asset is deployed into (none = PT loop)
     account: str | None = None       # borrow: read collateral and debt of this borrower from Morpho
+    state_path: str | None = None    # cex_basis: basisd's positions.json (or its state directory), re-read every run
+    cex: dict | None = None          # cex_basis: a basisd Position dict given inline instead of ``state_path``
 
 
 def short(a: str | None) -> str:
@@ -108,6 +111,8 @@ class Discovery:
             pos.label = r.label or f"${r.size_usd / 1e6:,.2f}M supplied to {self.g.nodes[mid].label}"
         elif r.kind == "borrow":
             self.add_borrow(pos, addr)
+        elif r.kind == "cex_basis":
+            self.add_cex_basis(pos, addr)
         else:
             raise ValueError(f"Unsupported position kind: {r.kind}")
 
@@ -150,6 +155,33 @@ class Discovery:
                              risk_factors=rf, evidence=ev))
         self.link(pid, self.add_chain(chain_id), "settles_on", Evidence("registry", "Contracts deployed on this chain"))
         return pid
+
+    # ------------------------------------------------------------------ cash-and-carry on an exchange
+    def add_cex_basis(self, pos: Node, address: str):
+        """Long spot + short perp on one exchange, read from basisd's state; prices and funding from the venue's mainnet API.
+
+        The settlement stablecoin (USDT) is discovered like any token, so its issuer, mint controls and peg are live.
+        ``size_usd`` becomes the position's capital (spot notional + margin), since basisd's state sets it.
+        """
+        r = self.req
+        venue, perp = cex.parse_address(address)
+        if r.cex:
+            info = {"venue": venue, "symbol": perp, **r.cex}
+        elif r.state_path:
+            info = cex.load_basisd(r.state_path, venue, perp)
+        else:
+            raise ValueError("A cex_basis position needs basisd's state_path (positions.json) or the position inline (cex)")
+        if not info.get("spot"):
+            info["spot"] = perp.split(":")[0]
+        md = cex.market_data(venue, perp, info["spot"])
+        usdt = morpho.asset(USDT[1], 1) or {"address": USDT[1], "symbol": "USDT", "decimals": 6, "tags": [], "price": None}
+        uid = self.add_asset(usdt, 1, 1)
+        if r.label:
+            info["label"] = r.label
+        r.size_usd = cex.build(self.g, pos, info, md, uid, self.link)
+        if info.get("state_mtime") and time.time() - info["state_mtime"] > 3600:
+            self.warnings.append(f"basisd state {info['state_file']} is {(time.time() - info['state_mtime']) / 3600:,.1f}h old: "
+                                 "the trader may have stopped, or the copy is not being synced")
 
     # ------------------------------------------------------------------ borrow
     def add_borrow(self, pos: Node, market_id: str):
@@ -540,8 +572,8 @@ class Discovery:
 
     # ------------------------------------------------------------------ layout hint
     def assign_layers(self):
-        order = {"position": 0, "market": 1, "oracle": 2, "asset": 2, "amm": 3, "feed": 3,
-                 "issuer": 4, "mint_authority": 4, "bridge": 4, "protocol": 5, "chain": 6}
+        order = {"position": 0, "market": 1, "perp": 1, "oracle": 2, "asset": 2, "amm": 3, "feed": 3,
+                 "issuer": 4, "mint_authority": 4, "bridge": 4, "exchange": 5, "protocol": 5, "chain": 6}
         for n in self.g.nodes.values():
             # A collateral venue sits beside the PT's AMM: both are where the PT gets sold.
             n.layer = 3 if n.attrs.get("role") == "collateral_venue" else order.get(n.type, 3)
